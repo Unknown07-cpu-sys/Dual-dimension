@@ -2,25 +2,31 @@
 <html>
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Dual Dimensions</title>
   <!-- Phaser.js from CDN -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.55.2/phaser.min.js"></script>
   <style>
-    body { margin: 0; }
-    canvas { display: block; }
-    @media (max-width: 600px) {
-      canvas { transform: scale(0.8); }
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #222;
+      overflow: hidden;
+      touch-action: none; /* stop the page scrolling while swiping */
     }
-    /* Simple styling for reset button */
+    canvas { display: block; }
     #resetBtn {
       position: absolute;
       top: 10px;
       right: 10px;
+      z-index: 10;
       padding: 8px 12px;
       background: #444;
       color: #fff;
       cursor: pointer;
       border-radius: 4px;
+      user-select: none;
+      font-family: sans-serif;
     }
   </style>
 </head>
@@ -29,45 +35,38 @@
 <script>
 const tileSize = 32;
 const gridWidth = 10, gridHeight = 10;
+const EMPTY = 0, OBSTACLE = 1, SWITCH = 2, EXIT = 3;
+const SWIPE_MIN = 20; // minimum swipe distance in px
+
 let lightGrid, shadowGrid;
-let currentLevel = 0; // For level progression
+let currentLevel = 0;
 let characters = {
   light: { x: 0, y: 0 },
   shadow: { x: 0, y: 0 }
 };
 
-// Sample level data (expandable to more levels)
+function makeGrid(cells) {
+  const grid = Array.from({ length: gridHeight }, () => Array(gridWidth).fill(EMPTY));
+  cells.forEach(([x, y, type]) => { grid[y][x] = type; });
+  return grid;
+}
+
+// Switch targets must point at EMPTY/OBSTACLE tiles (they toggle between the two).
 const levels = [
   {
     light: {
-      grid: (() => {
-        let grid = Array.from({length: gridHeight}, () => Array(gridWidth).fill(0));
-        grid[5][5] = 2; // Switch
-        grid[gridHeight-1][gridWidth-1] = 3; // Exit
-        grid[3][3] = 1; // Obstacle
-        return grid;
-      })(),
-      switches: [
-        { x: 5, y: 5, target: { world: "shadow", x: 4, y: 4 } }
-      ]
+      grid: makeGrid([[5, 5, SWITCH], [3, 3, OBSTACLE], [gridWidth - 1, gridHeight - 1, EXIT]]),
+      switches: [{ x: 5, y: 5, target: { world: "shadow", x: 6, y: 6 } }]
     },
     shadow: {
-      grid: (() => {
-        let grid = Array.from({length: gridHeight}, () => Array(gridWidth).fill(0));
-        grid[4][4] = 2; // Switch
-        grid[gridHeight-1][gridWidth-1] = 3; // Exit
-        grid[6][6] = 1; // Obstacle
-        return grid;
-      })(),
-      switches: [
-        { x: 4, y: 4, target: { world: "light", x: 3, y: 3 } }
-      ]
+      grid: makeGrid([[4, 4, SWITCH], [6, 6, OBSTACLE], [gridWidth - 1, gridHeight - 1, EXIT]]),
+      switches: [{ x: 4, y: 4, target: { world: "light", x: 3, y: 3 } }]
     }
   }
 ];
 
 function loadLevel(levelNum) {
-  let level = levels[levelNum];
+  const level = levels[levelNum];
   lightGrid = level.light.grid.map(row => row.slice());
   shadowGrid = level.shadow.grid.map(row => row.slice());
   characters.light = { x: 0, y: 0 };
@@ -75,19 +74,19 @@ function loadLevel(levelNum) {
 }
 
 function isWalkable(x, y, grid) {
-  return x >= 0 && y >= 0 && x < gridWidth && y < gridHeight && grid[y][x] !== 1;
+  return x >= 0 && y >= 0 && x < gridWidth && y < gridHeight && grid[y][x] !== OBSTACLE;
 }
 
 function moveCharacter(world, direction) {
-  let grid = world === "light" ? lightGrid : shadowGrid;
-  let pos = characters[world];
-  let [dx, dy] = direction === 'left' ? [-1, 0] :
-                 direction === 'right' ? [1, 0]  :
-                 direction === 'up' ? [0, -1] : [0, 1];
-  let newX = pos.x + dx, newY = pos.y + dy;
-  if (isWalkable(newX, newY, grid)) { 
-    pos.x = newX; 
-    pos.y = newY; 
+  const grid = world === "light" ? lightGrid : shadowGrid;
+  const pos = characters[world];
+  const [dx, dy] = direction === 'left' ? [-1, 0] :
+                   direction === 'right' ? [1, 0] :
+                   direction === 'up' ? [0, -1] : [0, 1];
+  const newX = pos.x + dx, newY = pos.y + dy;
+  if (isWalkable(newX, newY, grid)) {
+    pos.x = newX;
+    pos.y = newY;
   }
 }
 
@@ -95,146 +94,195 @@ class DualDimensionsScene extends Phaser.Scene {
   constructor() {
     super({ key: 'DualDimensionsScene' });
   }
-  
+
   preload() {
-    // Load SFX from Kenney.nl (free asset)
+    // Optional SFX. If it fails to load, the game still works (see playSwitch).
     this.load.audio('switch', 'https://assets.kenney.nl/Sounds/audioPack3/switch3.ogg');
-    // Optionally load particle texture if using particles (or comment out if not needed)
-    this.load.image('flare', 'https://labs.phaser.io/assets/particles/flare.png');
   }
-  
+
   create() {
+    this.won = false;
+    this.victoryObjects = [];
+
+    // Generate the particle texture locally instead of depending on a remote image
+    if (!this.textures.exists('spark')) {
+      const g = this.make.graphics({ x: 0, y: 0, add: false });
+      g.fillStyle(0xffffff, 1);
+      g.fillCircle(8, 8, 8);
+      g.generateTexture('spark', 16, 16);
+      g.destroy();
+    }
+
     loadLevel(currentLevel);
-    
-    // Create graphics objects for both worlds
+
     this.lightGraphics = this.add.graphics();
     this.shadowGraphics = this.add.graphics();
-    
     this.drawGrids();
-    
-    // Keyboard input for movement
+
+    // Keyboard input (also stops arrow keys from scrolling the page)
+    this.input.keyboard.addCapture('UP,DOWN,LEFT,RIGHT');
     this.input.keyboard.on('keydown', (event) => {
-      let direction = {ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down"}[event.key];
-      if (direction) {
-        this.handleMove(direction);
-      }
+      const direction = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" }[event.key];
+      if (direction) this.handleMove(direction);
     });
-    
-    // Mobile touch controls: full-screen swipe detection
-    this.input.on('pointerdown', (pointer) => this.touchStart = pointer.position);
+
+    // Swipe controls. Uses downX/downY (a fixed snapshot of where the press began)
+    // and ignores taps / tiny movements.
     this.input.on('pointerup', (pointer) => {
-      const dx = pointer.x - this.touchStart.x;
-      const dy = pointer.y - this.touchStart.y;
+      const dx = pointer.x - pointer.downX;
+      const dy = pointer.y - pointer.downY;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < SWIPE_MIN) return;
       if (Math.abs(dx) > Math.abs(dy)) this.handleMove(dx > 0 ? 'right' : 'left');
       else this.handleMove(dy > 0 ? 'down' : 'up');
     });
-    
-    // Reset button handling (from the HTML div above)
-    document.getElementById('resetBtn').addEventListener('click', () => {
-      loadLevel(currentLevel);
-      this.drawGrids();
-    });
-    
-    // Editor button example (if you implement a level editor scene)
+
+    // Reset button (DOM element). Listener is removed when the scene shuts down
+    // so restarting the scene can't stack up duplicates.
+    const resetBtn = document.getElementById('resetBtn');
+    this.onReset = () => this.resetLevel();
+    resetBtn.addEventListener('click', this.onReset);
+    // Keep presses on the button from reaching Phaser's global input listeners
+    ['mousedown', 'mouseup', 'touchstart', 'touchend'].forEach(evt =>
+      resetBtn.addEventListener(evt, (e) => e.stopPropagation())
+    );
+    this.events.once('shutdown', () => resetBtn.removeEventListener('click', this.onReset));
+
+    // Editor button placeholder
     this.editorBtn = this.add.text(10, 10, '🛠 Editor', { fill: '#FFF' })
       .setInteractive()
       .on('pointerdown', () => {
-        // Launch level editor scene (to be implemented)
-        // this.scene.start('LevelEditorScene');
+        // this.scene.start('LevelEditorScene'); // to be implemented
       });
   }
-  
+
+  resetLevel() {
+    this.clearVictory();
+    loadLevel(currentLevel);
+    this.drawGrids();
+  }
+
+  clearVictory() {
+    this.victoryObjects.forEach(obj => obj.destroy());
+    this.victoryObjects = [];
+    this.won = false;
+  }
+
   handleMove(direction) {
+    if (this.won) return; // no moving after winning
+
+    const before = {
+      light: { ...characters.light },
+      shadow: { ...characters.shadow }
+    };
     moveCharacter("light", direction);
     moveCharacter("shadow", direction);
-    this.checkSwitches();
+    this.checkSwitches(before);
     this.drawGrids();
-    if (this.checkVictory()) {
-      this.victoryScreen();
+    if (this.checkVictory()) this.victoryScreen();
+  }
+
+  playSwitch() {
+    // sound.play() throws if the audio failed to load, so check first
+    if (this.cache.audio.exists('switch')) this.sound.play('switch');
+  }
+
+  checkSwitches(before) {
+    for (const world of ['light', 'shadow']) {
+      const pos = characters[world];
+
+      // Only fire when the character actually ENTERS the switch tile
+      if (pos.x === before[world].x && pos.y === before[world].y) continue;
+
+      const sw = levels[currentLevel][world].switches.find(s => s.x === pos.x && s.y === pos.y);
+      if (!sw) continue;
+
+      const targetWorld = sw.target.world;
+      const grid = targetWorld === "light" ? lightGrid : shadowGrid;
+      const { x, y } = sw.target;
+      const tile = grid[y][x];
+
+      // Only toggle plain floor <-> obstacle (never corrupt switch/exit tiles)
+      if (tile !== EMPTY && tile !== OBSTACLE) continue;
+
+      // Don't drop an obstacle on top of the character standing there
+      const occupant = characters[targetWorld];
+      if (tile === EMPTY && occupant.x === x && occupant.y === y) continue;
+
+      grid[y][x] = tile === EMPTY ? OBSTACLE : EMPTY;
+      this.playSwitch();
     }
   }
-  
-  checkSwitches() {
-    // Process Light world's switches dynamically
-    levels[currentLevel].light.switches.forEach(sw => {
-      if (characters.light.x === sw.x && characters.light.y === sw.y) {
-        this.sound.play('switch');
-        let target = sw.target;
-        (target.world === "light" ? lightGrid : shadowGrid)[target.y][target.x] ^= 1;
-      }
-    });
-    // Process Shadow world's switches dynamically
-    levels[currentLevel].shadow.switches.forEach(sw => {
-      if (characters.shadow.x === sw.x && characters.shadow.y === sw.y) {
-        this.sound.play('switch');
-        let target = sw.target;
-        (target.world === "light" ? lightGrid : shadowGrid)[target.y][target.x] ^= 1;
-      }
-    });
-  }
-  
+
   checkVictory() {
-    return lightGrid[characters.light.y][characters.light.x] === 3 &&
-           shadowGrid[characters.shadow.y][characters.shadow.x] === 3;
+    return lightGrid[characters.light.y][characters.light.x] === EXIT &&
+           shadowGrid[characters.shadow.y][characters.shadow.x] === EXIT;
   }
-  
+
   victoryScreen() {
-    // Simple victory particles and Next Level button
-    this.add.particles('flare').createEmitter({
-      x: 400, y: 300,
-      speed: 100,
-      scale: { start: 0.5, end: 0 },
+    this.won = true;
+
+    const particles = this.add.particles('spark');
+    const emitter = particles.createEmitter({
+      speed: { min: 50, max: 200 },
+      scale: { start: 0.6, end: 0 },
       blendMode: 'ADD',
       lifespan: 800,
-      quantity: 50
+      on: false
     });
-    
+    emitter.explode(50, 400, 300); // one burst instead of endless emission
+
     const nextBtn = this.add.text(300, 400, 'Next Level', { fontSize: '32px', fill: '#0F0' })
-      .setInteractive()
+      .setInteractive({ useHandCursor: true })
       .on('pointerdown', () => {
         currentLevel = (currentLevel + 1) % levels.length;
-        loadLevel(currentLevel);
-        this.drawGrids();
-        nextBtn.destroy();
+        this.resetLevel(); // also clears the victory objects
       });
+
+    this.victoryObjects.push(particles, nextBtn);
   }
-  
+
   drawGrids() {
     this.lightGraphics.clear();
     this.shadowGraphics.clear();
-    
+
     const offsetX = 50, offsetY = 50;
     const offsetX2 = offsetX + gridWidth * tileSize + 50;
-    
+
     for (let row = 0; row < gridHeight; row++) {
       for (let col = 0; col < gridWidth; col++) {
-        this.drawTile(this.lightGraphics, lightGrid[row][col], offsetX, col, row, "light");
-        this.drawTile(this.shadowGraphics, shadowGrid[row][col], offsetX2, col, row, "shadow");
+        this.drawTile(this.lightGraphics, lightGrid[row][col], offsetX, offsetY, col, row, "light");
+        this.drawTile(this.shadowGraphics, shadowGrid[row][col], offsetX2, offsetY, col, row, "shadow");
       }
     }
   }
-  
-  drawTile(graphics, tile, offsetX, col, row, world) {
-    let colors = {
-      0: world === "light" ? 0xF4D35E : 0x4A4E69,  // empty
-      1: 0xFF0000,                                  // obstacle
-      2: world === "light" ? 0x7AC74F : 0x22223B,    // switch
-      3: 0x00FFFF                                   // exit
+
+  drawTile(graphics, tile, offsetX, offsetY, col, row, world) {
+    const colors = {
+      [EMPTY]: world === "light" ? 0xF4D35E : 0x4A4E69,
+      [OBSTACLE]: 0xFF0000,
+      [SWITCH]: world === "light" ? 0x7AC74F : 0x22223B,
+      [EXIT]: 0x00FFFF
     };
+    const px = offsetX + col * tileSize;
+    const py = offsetY + row * tileSize;
+
     graphics.fillStyle(colors[tile], 1);
-    graphics.fillRect(offsetX + col * tileSize, offsetY + row * tileSize, tileSize - 2, tileSize - 2);
-    // Draw grid border
+    graphics.fillRect(px, py, tileSize - 2, tileSize - 2);
+
+    // Grid border
     graphics.lineStyle(1, 0xFFFFFF, 0.2);
-    graphics.strokeRect(offsetX + col * tileSize, offsetY + row * tileSize, tileSize, tileSize);
-    // Add switch animation effect
-    if (tile === 2) {
+    graphics.strokeRect(px, py, tileSize, tileSize);
+
+    // Switch marker
+    if (tile === SWITCH) {
       graphics.fillStyle(0xFFFFFF, 0.5);
-      graphics.fillCircle(offsetX + col * tileSize + tileSize/2, offsetY + row * tileSize + tileSize/2, 8);
+      graphics.fillCircle(px + tileSize / 2, py + tileSize / 2, 8);
     }
-    // Draw character if positioned here
+
+    // Character: drawn smaller so the tile underneath (switch/exit) stays visible
     if (characters[world].x === col && characters[world].y === row) {
       graphics.fillStyle(world === "light" ? 0x0000FF : 0x00FF00, 1);
-      graphics.fillRect(offsetX + col * tileSize, offsetY + row * tileSize, tileSize - 2, tileSize - 2);
+      graphics.fillRect(px + 7, py + 7, tileSize - 16, tileSize - 16);
     }
   }
 }
@@ -244,6 +292,12 @@ const config = {
   width: 800,
   height: 600,
   backgroundColor: "#222",
+  // Scales to fit any screen and keeps pointer coordinates correct,
+  // replacing the old CSS transform: scale(0.8) hack
+  scale: {
+    mode: Phaser.Scale.FIT,
+    autoCenter: Phaser.Scale.CENTER_BOTH
+  },
   scene: [DualDimensionsScene]
 };
 
