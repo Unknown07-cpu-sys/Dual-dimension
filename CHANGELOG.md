@@ -1,7 +1,7 @@
 # Changelog
 
 ## 0.3.0
-- Split the single file into `index.html`, `css/`, and `js/` (engine and levels separate)
+- Reorganized the code into clear sections (level data separate from the engine)
 - Title screen with level select, saved progress, best times and star ratings
 - New mechanic: dimension-locked spikes (orange = Light only, purple = Shadow only)
 - Levels 7-10 added (10 total) and par times for every level
