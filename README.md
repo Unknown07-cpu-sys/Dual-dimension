@@ -4,7 +4,7 @@ A puzzle game where you control two characters in parallel worlds, moving both a
 
 🎮 **Play now:** https://Unknown07-cpu-sys.github.io/Dual-dimension/
 
-![Screenshot](game-image.png)
+![Screenshot](game-image1.png)
 
 ## 🤖 Made entirely by AI
 
