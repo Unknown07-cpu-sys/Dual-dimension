@@ -48,10 +48,9 @@ This game was designed and coded entirely by AI ([Claude](https://claude.ai) by 
 ## Project structure
 
 ```
-index.html     page shell
-css/style.css  styling
-js/levels.js   level data (ASCII maps, easy to edit)
-js/game.js     engine: physics, rendering, menu, input
+index.html   the whole game: styles, level data (top of the script) and engine
+README.md    this file
+CHANGELOG.md version history
 ```
 
 ## Run locally
@@ -60,7 +59,7 @@ Open `index.html` in a browser, or run `python3 -m http.server` in this folder.
 
 ## Make your own level
 
-Levels are plain text in `js/levels.js`. Each row is 25 characters, and rows are aligned to the bottom of a 25×15 grid.
+Levels are plain text in the `LEVELS` list at the top of the script in `index.html`. Each row is 25 characters, and rows are aligned to the bottom of a 25×15 grid.
 
 ```
 #  ground          L  solid in Light      S  solid in Shadow
