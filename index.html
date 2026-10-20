@@ -7,12 +7,496 @@
 <meta name="theme-color" content="#0b0a16" />
 <title>Dual Dimensions</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌗</text></svg>" />
-<link rel="stylesheet" href="css/style.css" />
+<style>
+html, body { margin: 0; height: 100%; background: #0b0a16; overflow: hidden; touch-action: none; }
+body { display: flex; align-items: center; justify-content: center; }
+canvas { width: min(100vw, calc(100vh * 5 / 3)); aspect-ratio: 5 / 3; display: block; touch-action: none; }
+</style>
 </head>
 <body>
 <canvas id="c" width="800" height="480"></canvas>
 <noscript>Dual Dimensions needs JavaScript enabled.</noscript>
-<script src="js/levels.js"></script>
-<script src="js/game.js"></script>
+<script>
+// ===================== LEVELS (edit these to make your own) =====================
+/*
+  Legend:  # ground (solid in both dimensions)   L solid only in LIGHT   S solid only in SHADOW
+           ^ spikes   * shard   G portal (opens when all shards are collected)   P start
+  u  spikes lethal only in LIGHT      n  spikes lethal only in SHADOW
+  Rows are aligned to the bottom of the 25x15 screen.
+*/
+const LEVELS = [
+  { name: 'First Light', par: 8, hint: 'Collect every shard, then enter the portal.', rows: [
+    ".........................",
+    "..*.......*.....*........",
+    ".P.....###.....###....G..",
+    "#########################",
+    "#########################"] },
+  { name: 'The Shift', par: 10, hint: 'Press SHIFT (or E / X) to swap dimensions.', rows: [
+    "...................S.....",
+    "...................S.....",
+    "...................S.....",
+    "....*......*.......S...*.",
+    ".P.................S...G.",
+    "########SSSSSSS##########",
+    "########.......##########"] },
+  { name: 'Ghost Ladder', par: 14, hint: 'Shift in mid-air to land on platforms that only exist in the other dimension.', rows: [
+    "......................G..",
+    "..................*.SSS..",
+    ".........................",
+    ".............*...LLL.....",
+    ".........................",
+    "........*...SSS..........",
+    ".........................",
+    ".......LLL...............",
+    ".P.......................",
+    "######...................",
+    "######..................."] },
+  { name: 'Gatekeepers', par: 14, hint: 'Walls are solid in one dimension only. You cannot shift while inside a wall.', rows: [
+    ".....L....S....L....S....",
+    ".....L....S....L....S....",
+    ".....L..*.S..*.L..*.S....",
+    ".....L....S....L....S....",
+    ".P...L.^^.S.^^.L.^^.S..G.",
+    "#########################",
+    "#########################"] },
+  { name: 'Stepping Stones', par: 14, hint: 'Every stone belongs to one dimension. Keep the rhythm.', rows: [
+    ".......*....*....*.......",
+    ".........................",
+    ".P..LL...SS...LL...SS..G.",
+    "###...................###",
+    "###...................###"] },
+  { name: 'Crossing', par: 20, hint: 'Wall, then stones, then wall.', rows: [
+    "....L..................S.",
+    "....L...*...*....*.....S.",
+    "..*.L..................S.",
+    "....L..................S.",
+    ".P..L....SS...LL...SS..SG",
+    "#######...............###",
+    "#######...............###"] },
+  { name: 'Safe Passage', par: 12, hint: 'Some spikes only hurt in one dimension. Shift to walk through them safely.', rows: [
+    "........*...*...*........",
+    ".P....uuuuu...nnnnn....G.",
+    "#########################",
+    "#########################"] },
+  { name: 'Crossfire', par: 20, hint: 'Walls and spikes alternate. Plan every shift.', rows: [
+    "...L.......S.......L.....",
+    "...L.......S.......L.....",
+    "...L.......S.......L.....",
+    "...L...*...S...*...L...*.",
+    ".P.L..nnn..S..uuu..L..nnG",
+    "#########################",
+    "#########################"] },
+  { name: 'Mirror Ladder', par: 16, hint: 'The same climb, but reversed.', rows: [
+    "..G......................",
+    "..SSS.*..................",
+    ".........................",
+    ".....LLL...*.............",
+    ".........................",
+    "..........SSS...*........",
+    ".........................",
+    "...............LLL.......",
+    ".......................P.",
+    "...................######",
+    "...................######"] },
+  { name: 'Dual Dimensions', par: 24, hint: 'Everything you have learned.', rows: [
+    "...L.....................",
+    "...L............*........",
+    "...L.........*...........",
+    "...L...*...............*.",
+    ".P.L..nnn....LL...SS..uuG",
+    "###########...........###",
+    "###########...........###"] }
+];
+
+// ===================== ENGINE =====================
+// Dual Dimensions - game engine. Level data lives in levels.js.
+const T = 32, COLS = 25, ROWS = 15, W = 800, H = 480;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+
+// ---------- helpers ----------
+const hx = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+const mix = (a, b, t) => { const A = hx(a), B = hx(b); return `rgb(${A.map((v, i) => Math.round(v + (B[i] - v) * t)).join(',')})`; };
+const store = {
+  get() { try { return JSON.parse(localStorage.getItem('dd-save')) || {}; } catch (e) { return {}; } },
+  set(d) { try { localStorage.setItem('dd-save', JSON.stringify(d)); } catch (e) {} }
+};
+const save = Object.assign({ unlocked: 0, best: {}, muted: false }, store.get());
+let muted = !!save.muted;
+
+let actx = null;
+function audio() { try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === 'suspended') actx.resume(); startMusic(); } catch (e) {} }
+function beep(f, d = 0.08, type = 'sine', v = 0.06) {
+  if (!actx || muted) return;
+  try {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = type; o.frequency.value = f; g.gain.value = v;
+    g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + d);
+    o.connect(g); g.connect(actx.destination); o.start(); o.stop(actx.currentTime + d);
+  } catch (e) {}
+}
+
+// ---------- ambient music (synthesized, changes with the dimension) ----------
+let pad = null;
+function startMusic() {
+  if (!actx || pad) return;
+  const gn = actx.createGain(); gn.gain.value = 0; gn.connect(actx.destination);
+  const o1 = actx.createOscillator(), o2 = actx.createOscillator();
+  o1.type = 'sine'; o2.type = 'triangle'; o1.connect(gn); o2.connect(gn); o1.start(); o2.start();
+  pad = { gn, o1, o2 }; updateMusic();
+}
+function updateMusic() {
+  if (!pad) return;
+  const n = actx.currentTime;
+  pad.gn.gain.setTargetAtTime(muted ? 0 : 0.03, n, 0.4);
+  pad.o1.frequency.setTargetAtTime(dim ? 160 : 220, n, 0.15);
+  pad.o2.frequency.setTargetAtTime(dim ? 240 : 330, n, 0.15);
+}
+
+// ---------- state ----------
+let lvl = 0, grid, shards, goal, hero, dim = 0, tdim = 0;
+let state = 'play', collected = 0, deaths = 0, time = 0, deadT = 0, shake = 0, blocked = 0, msgT = 0, flash = 0;
+let particles = [], paused = false, menuT = 0, sel = 0;
+const dust = Array.from({ length: 40 }, () => ({ x: Math.random() * W, y: Math.random() * H, s: 1 + Math.random() * 2, v: 8 + Math.random() * 18 }));
+
+function start(i, keep = false) {
+  lvl = i;
+  const rows = LEVELS[i].rows.map(r => r.padEnd(COLS, '.'));
+  grid = Array(ROWS - rows.length).fill('.'.repeat(COLS)).concat(rows).map(r => r.split(''));
+  shards = []; goal = null;
+  grid.forEach((row, r) => row.forEach((ch, c) => {
+    if (ch === '*') { shards.push({ c, r, got: false }); row[c] = '.'; }
+    else if (ch === 'G') { goal = { c, r }; row[c] = '.'; }
+    else if (ch === 'P') { hero = { x: c * T + 6, y: (r + 1) * T - 28, w: 20, h: 28, vx: 0, vy: 0, ground: false, coyote: 0, buffer: 0, face: 1 }; row[c] = '.'; }
+  }));
+  dim = 0; tdim = 0; collected = 0; state = 'play'; particles = []; msgT = 0; paused = false; updateMusic();
+  if (!keep) { deaths = 0; time = 0; }
+  save.current = i; store.set(save);
+}
+const next = () => start((lvl + 1) % LEVELS.length);
+
+// ---------- collision ----------
+const spikeOn = (ch, d) => ch === '^' || (ch === 'u' && d === 0) || (ch === 'n' && d === 1);
+const solidIn = (ch, d) => ch === '#' || (ch === 'L' && d === 0) || (ch === 'S' && d === 1);
+function solidAt(c, r, d) {
+  if (c < 0 || c >= COLS) return true;
+  if (r < 0 || r >= ROWS) return false;
+  return solidIn(grid[r][c], d);
+}
+function hits(x, y, w, h, d) {
+  const c0 = Math.floor(x / T), c1 = Math.floor((x + w - 0.01) / T), r0 = Math.floor(y / T), r1 = Math.floor((y + h - 0.01) / T);
+  for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) if (solidAt(c, r, d)) return true;
+  return false;
+}
+function touchingSpike(d = dim) {
+  const x0 = hero.x + 4, y0 = hero.y + 4, x1 = hero.x + hero.w - 4, y1 = hero.y + hero.h - 2;
+  for (let r = Math.floor(hero.y / T); r <= Math.floor((hero.y + hero.h) / T); r++)
+    for (let c = Math.floor(hero.x / T); c <= Math.floor((hero.x + hero.w) / T); c++) {
+      if (r < 0 || r >= ROWS || c < 0 || c >= COLS || !spikeOn(grid[r][c], d)) continue;
+      const sx = c * T + 6, sy = r * T + 16, sw = T - 12, sh = T - 16;
+      if (x0 < sx + sw && x1 > sx && y0 < sy + sh && y1 > sy) return true;
+    }
+  return false;
+}
+
+// ---------- input ----------
+const keys = { left: false, right: false, jump: false };
+const touch = { left: false, right: false, jump: false };
+let touchMode = matchMedia('(pointer: coarse)').matches;
+const KEYMAP = { ArrowLeft: 'left', a: 'left', ArrowRight: 'right', d: 'right', ArrowUp: 'jump', w: 'jump', ' ': 'jump' };
+
+addEventListener('keydown', e => {
+  audio();
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  if (k.startsWith('Arrow') || k === ' ') e.preventDefault();
+  if (k === 'm') { muted = !muted; save.muted = muted; store.set(save); updateMusic(); return; }
+  if (k === 'Escape') { openMenu(); return; }
+  if (state === 'menu') { menuKey(k); return; }
+  if (k === 'p' && state === 'play') { paused = !paused; return; }
+  if (paused) return;
+  if (state === 'won' && (k === 'Enter' || k === ' ')) { next(); return; }
+  if (KEYMAP[k]) { if (!keys[KEYMAP[k]] && KEYMAP[k] === 'jump') hero.buffer = 0.1; keys[KEYMAP[k]] = true; }
+  if (!e.repeat) {
+    if (k === 'Shift' || k === 'e' || k === 'x') tryShift();
+    else if (k === 'r') start(lvl, true);
+    else if (/^[1-9]$/.test(k) && +k - 1 <= save.unlocked && +k <= LEVELS.length) start(+k - 1);
+  }
+});
+addEventListener('keyup', e => {
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  if (KEYMAP[k]) keys[KEYMAP[k]] = false;
+});
+
+const BTN = { left: { x: 40, y: 452, r: 24 }, right: { x: 100, y: 452, r: 24 }, jump: { x: W - 110, y: 452, r: 24 }, shift: { x: W - 50, y: 452, r: 24 }, menu: { x: W / 2, y: 452, r: 18 } };
+const pmap = new Map();
+const pt = e => { const r = cv.getBoundingClientRect(); return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height }; };
+const btnAt = p => { for (const k in BTN) if (Math.hypot(p.x - BTN[k].x, p.y - BTN[k].y) <= BTN[k].r + 14) return k; return null; };
+const syncTouch = () => { touch.left = touch.right = touch.jump = false; for (const k of pmap.values()) if (k && k !== 'shift' && k !== 'menu') touch[k] = true; };
+cv.addEventListener('pointerdown', e => {
+  audio();
+  if (e.pointerType === 'touch') touchMode = true;
+  e.preventDefault();
+  if (state === 'menu') {
+    const p = pt(e);
+    LEVELS.forEach((_, i) => { const r = tileRect(i); if (i <= save.unlocked && p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h) start(i); });
+    return;
+  }
+  if (state === 'won') { next(); return; }
+  if (!touchMode) return;
+  const k = btnAt(pt(e));
+  if (k === 'menu') { openMenu(); return; }
+  pmap.set(e.pointerId, k);
+  if (k === 'jump') hero.buffer = 0.1;
+  if (k === 'shift') tryShift();
+  syncTouch();
+});
+cv.addEventListener('pointermove', e => { if (pmap.has(e.pointerId)) { pmap.set(e.pointerId, btnAt(pt(e))); syncTouch(); } });
+['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => cv.addEventListener(ev, e => { pmap.delete(e.pointerId); syncTouch(); }));
+
+// ---------- actions ----------
+function burst(x, y, color, n = 14, sp = 160) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * 6.283, s = sp * (0.3 + Math.random() * 0.7);
+    particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.5 + Math.random() * 0.4, color });
+  }
+}
+function tryShift() {
+  if (state !== 'play') return;
+  const nd = 1 - dim;
+  if (hits(hero.x, hero.y, hero.w, hero.h, nd) || touchingSpike(nd)) { blocked = 0.35; shake = 0.15; beep(90, 0.15, 'square', 0.05); return; }
+  dim = nd; updateMusic();
+  burst(hero.x + hero.w / 2, hero.y + hero.h / 2, dim ? '#b9a8ff' : '#ffe08a', 18, 220);
+  beep(dim ? 220 : 520, 0.15, 'triangle', 0.07);
+}
+function die() {
+  if (state !== 'play') return;
+  state = 'dead'; deadT = 0.6; deaths++; flash = 0.3; shake = 0.25;
+  burst(hero.x + hero.w / 2, hero.y + hero.h / 2, '#ff4d6d', 30, 260);
+  beep(140, 0.3, 'sawtooth', 0.07);
+}
+function win() {
+  state = 'won'; msgT = 0;
+  const b = save.best[lvl];
+  if (!b || time < b) save.best[lvl] = Math.round(time * 10) / 10;
+  save.unlocked = Math.max(save.unlocked, Math.min(lvl + 1, LEVELS.length - 1));
+  store.set(save);
+  burst(goal.c * T + 16, goal.r * T + 16, '#7dffb0', 40, 280);
+  beep(660, 0.15); setTimeout(() => beep(880, 0.25), 140);
+}
+
+// ---------- update ----------
+function update(dt) {
+  tdim += Math.sign(dim - tdim) * Math.min(Math.abs(dim - tdim), dt * 5);
+  blocked = Math.max(0, blocked - dt); shake = Math.max(0, shake - dt); flash = Math.max(0, flash - dt); msgT = Math.max(0, msgT - dt);
+  particles.forEach(p => { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 300 * dt; p.life -= dt; });
+  particles = particles.filter(p => p.life > 0);
+  dust.forEach(d => { d.y -= d.v * dt; if (d.y < -4) { d.y = H + 4; d.x = Math.random() * W; } });
+
+  if (state === 'menu') { menuT += dt; if (menuT > 2.5) { menuT = 0; dim = 1 - dim; updateMusic(); } return; }
+  if (state === 'dead') { deadT -= dt; if (deadT <= 0) start(lvl, true); return; }
+  if (state !== 'play') return;
+  time += dt;
+
+  const dir = (keys.left || touch.left ? -1 : 0) + (keys.right || touch.right ? 1 : 0);
+  const held = keys.jump || touch.jump;
+  hero.vx += (dir * 210 - hero.vx) * Math.min(1, (hero.ground ? 18 : 10) * dt);
+  if (dir) hero.face = dir;
+  hero.vy = Math.min(hero.vy + 1700 * dt, 900);
+  hero.coyote = hero.ground ? 0.1 : hero.coyote - dt;
+  hero.buffer -= dt;
+  if (hero.buffer > 0 && hero.coyote > 0) { hero.vy = -620; hero.buffer = 0; hero.coyote = 0; beep(380, 0.06, 'square', 0.03); }
+  if (!held && hero.vy < -230) hero.vy = -230; // variable jump height
+
+  hero.x += hero.vx * dt;
+  if (hits(hero.x, hero.y, hero.w, hero.h, dim)) {
+    if (hero.vx > 0) hero.x = Math.floor((hero.x + hero.w) / T) * T - hero.w - 0.01;
+    else if (hero.vx < 0) hero.x = (Math.floor(hero.x / T) + 1) * T;
+    hero.vx = 0;
+  }
+  hero.y += hero.vy * dt; hero.ground = false;
+  if (hits(hero.x, hero.y, hero.w, hero.h, dim)) {
+    if (hero.vy > 0) { hero.y = Math.floor((hero.y + hero.h) / T) * T - hero.h - 0.01; hero.ground = true; }
+    else hero.y = (Math.floor(hero.y / T) + 1) * T;
+    hero.vy = 0;
+  }
+
+  const cx = hero.x + hero.w / 2, cy = hero.y + hero.h / 2;
+  shards.forEach(s => {
+    if (!s.got && Math.hypot(cx - (s.c * T + 16), cy - (s.r * T + 16)) < 24) {
+      s.got = true; collected++; burst(s.c * T + 16, s.r * T + 16, '#5df2ff', 12, 140); beep(700 + collected * 90, 0.1, 'triangle', 0.06);
+    }
+  });
+  if (goal && Math.abs(cx - (goal.c * T + 16)) < 18 && Math.abs(cy - (goal.r * T + 16)) < 22) {
+    if (collected === shards.length) win(); else if (msgT <= 0) msgT = 1.5;
+  }
+  if (touchingSpike() || hero.y > H + 40) die();
+}
+
+// ---------- drawing ----------
+function drawSpike(ch, x, y, t) {
+  const a = ch === '^' ? 1 : ch === 'u' ? 1 - t : t;
+  const col = ch === '^' ? '#ff4d6d' : ch === 'u' ? '#e8590c' : '#b197fc';
+  const tri = () => { ctx.beginPath(); ctx.moveTo(x + 4, y + T); ctx.lineTo(x + T / 2, y + 12); ctx.lineTo(x + T - 4, y + T); ctx.closePath(); };
+  if (a > 0.02) { ctx.globalAlpha = a; ctx.fillStyle = col; tri(); ctx.fill(); }
+  if (a < 0.98) { ctx.globalAlpha = 0.5 * (1 - a); ctx.strokeStyle = col; ctx.setLineDash([3, 3]); ctx.lineWidth = 1.5; tri(); ctx.stroke(); ctx.setLineDash([]); }
+  ctx.globalAlpha = 1;
+}
+
+function draw() {
+  const t = tdim;
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, mix('#ffe29a', '#0d0b1f', t)); g.addColorStop(1, mix('#ffb86b', '#2b1d4a', t));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = mix('#ffffff', '#9a8cff', t); ctx.globalAlpha = 0.35;
+  dust.forEach(d => ctx.fillRect(d.x, d.y, d.s, d.s));
+  ctx.globalAlpha = 1;
+
+  ctx.save();
+  if (shake > 0) ctx.translate((Math.random() - 0.5) * 6, (Math.random() - 0.5) * 6);
+
+  const lightA = 1 - t, shadowA = t;
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    const ch = grid[r][c], x = c * T, y = r * T;
+    if (ch === '#') {
+      ctx.fillStyle = mix('#b8863b', '#3a3560', t); ctx.fillRect(x, y, T, T);
+      ctx.fillStyle = mix('#e0aa58', '#5b5490', t); ctx.fillRect(x, y, T, 4);
+    } else if (ch === 'L' || ch === 'S') {
+      const a = ch === 'L' ? lightA : shadowA;
+      const fill = ch === 'L' ? '#ffcf4a' : '#7c5cff', edge = ch === 'L' ? '#fff3b0' : '#d2c7ff';
+      if (a > 0.02) {
+        ctx.globalAlpha = a; ctx.fillStyle = fill; ctx.fillRect(x, y, T, T);
+        ctx.fillStyle = edge; ctx.fillRect(x, y, T, 4); ctx.globalAlpha = 1;
+      }
+      if (a < 0.98) {
+        ctx.globalAlpha = 0.5 * (1 - a); ctx.strokeStyle = ch === 'L' ? '#ffcf4a' : '#a592ff';
+        ctx.setLineDash([4, 4]); ctx.lineWidth = 1.5; ctx.strokeRect(x + 2, y + 2, T - 4, T - 4);
+        ctx.setLineDash([]); ctx.globalAlpha = 1;
+      }
+    } else if (ch === '^' || ch === 'u' || ch === 'n') {
+      drawSpike(ch, x, y, t);
+    }
+  }
+
+  const now = performance.now() / 1000;
+  shards.forEach(s => {
+    if (s.got) return;
+    const x = s.c * T + 16, y = s.r * T + 16 + Math.sin(now * 3 + s.c) * 3;
+    ctx.fillStyle = '#5df2ff'; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(x, y - 10); ctx.lineTo(x + 7, y); ctx.lineTo(x, y + 10); ctx.lineTo(x - 7, y); ctx.closePath(); ctx.fill(); ctx.stroke();
+  });
+
+  if (goal) {
+    const x = goal.c * T + 16, y = goal.r * T + 16, open = collected === shards.length;
+    ctx.strokeStyle = open ? '#7dffb0' : mix('#7a6a5a', '#6a6a8a', t); ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.ellipse(x, y, 11, 15, 0, 0, 6.283); ctx.stroke();
+    if (open) {
+      ctx.fillStyle = 'rgba(125,255,176,' + (0.35 + 0.2 * Math.sin(now * 5)) + ')';
+      ctx.beginPath(); ctx.ellipse(x, y, 8, 12, 0, 0, 6.283); ctx.fill();
+    }
+  }
+
+  if (state !== 'dead') {
+    const hxp = hero.x, hyp = hero.y;
+    ctx.fillStyle = blocked > 0 ? '#ff4d6d' : mix('#3b2a8f', '#ffffff', t);
+    ctx.fillRect(hxp, hyp, hero.w, hero.h);
+    ctx.fillStyle = mix('#ffffff', '#1a1040', t);
+    const ex = hero.face > 0 ? hxp + 11 : hxp + 3;
+    ctx.fillRect(ex, hyp + 7, 4, 5); ctx.fillRect(ex + 5, hyp + 7, 4, 5);
+    if (blocked > 0) { ctx.strokeStyle = '#ff4d6d'; ctx.lineWidth = 2; ctx.strokeRect(hxp - 4, hyp - 4, hero.w + 8, hero.h + 8); }
+  }
+  particles.forEach(p => { ctx.globalAlpha = Math.max(0, p.life * 1.6); ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, 4, 4); });
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  if (flash > 0) { ctx.fillStyle = `rgba(255,77,109,${flash})`; ctx.fillRect(0, 0, W, H); }
+
+  if (state === 'menu') { drawMenu(); return; }
+
+  // HUD
+  const fg = mix('#2a1f4a', '#ffffff', t);
+  ctx.fillStyle = fg; ctx.textBaseline = 'top'; ctx.font = 'bold 18px sans-serif'; ctx.textAlign = 'left';
+  ctx.fillText(`${lvl + 1}/${LEVELS.length}  ${LEVELS[lvl].name}`, 14, 10);
+  ctx.textAlign = 'right';
+  const best = save.best[lvl];
+  ctx.fillText(`◆ ${collected}/${shards.length}    ☠ ${deaths}    ${time.toFixed(1)}s / ${LEVELS[lvl].par}s${best ? '  (best ' + best + 's)' : ''}`, W - 14, 10);
+  ctx.font = '14px sans-serif'; ctx.textAlign = 'center'; ctx.globalAlpha = 0.85;
+  ctx.fillText(LEVELS[lvl].hint, W / 2, 40);
+  if (msgT > 0) { ctx.fillStyle = '#ff4d6d'; ctx.font = 'bold 16px sans-serif'; ctx.fillText('Collect all shards first!', W / 2, 62); }
+  ctx.globalAlpha = 0.55; ctx.fillStyle = fg; ctx.font = '12px sans-serif';
+  if (!touchMode) ctx.fillText('←/→ move · ↑/Space jump · Shift: switch dimension · R restart · P pause · M mute · Esc menu', W / 2, H - 18);
+  ctx.globalAlpha = 1;
+
+  if (touchMode) {
+    const labels = { left: '◀', right: '▶', jump: '▲', shift: '⇄', menu: '☰' };
+    for (const k in BTN) {
+      const b = BTN[k];
+      ctx.globalAlpha = 0.45; ctx.fillStyle = k === 'shift' ? '#7c5cff' : '#000'; ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, 6.283); ctx.fill();
+      ctx.globalAlpha = 0.9; ctx.fillStyle = '#fff'; ctx.font = 'bold 20px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(labels[k], b.x, b.y + 1);
+    }
+    ctx.globalAlpha = 1; ctx.textBaseline = 'top';
+  }
+
+  if (state === 'won') {
+    ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const last = lvl === LEVELS.length - 1;
+    ctx.fillStyle = '#7dffb0'; ctx.font = 'bold 40px sans-serif';
+    ctx.fillText(last ? 'Both dimensions mastered! 🎉' : 'Level complete!', W / 2, 190);
+    ctx.fillStyle = '#fff'; ctx.font = '22px sans-serif';
+    ctx.fillText(`${time.toFixed(1)}s · ${deaths} ${deaths === 1 ? 'death' : 'deaths'}${save.best[lvl] === Math.round(time * 10) / 10 ? ' · new best!' : ''}`, W / 2, 248);
+    const st = starsFor(lvl, time);
+    ctx.fillStyle = '#ffd43b'; ctx.font = '34px sans-serif'; ctx.fillText('★'.repeat(st) + '☆'.repeat(3 - st), W / 2, 290);
+    ctx.fillStyle = '#aab'; ctx.font = '18px sans-serif';
+    ctx.fillText(last ? 'Tap / Enter to play again' : 'Tap / Enter for the next level', W / 2, 335);
+  }
+}
+
+// ---------- menu ----------
+const MCOLS = 5;
+const tileRect = i => ({ x: 68 + (i % MCOLS) * 136, y: 250 + Math.floor(i / MCOLS) * 96, w: 120, h: 80 });
+const starsFor = (i, t) => (t == null ? 0 : t <= LEVELS[i].par ? 3 : t <= LEVELS[i].par * 1.6 ? 2 : 1);
+function openMenu() { state = 'menu'; sel = lvl; paused = false; menuT = 0; }
+function menuKey(k) {
+  const d = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -MCOLS, ArrowDown: MCOLS, a: -1, d: 1, w: -MCOLS, s: MCOLS }[k];
+  if (d) { const n = sel + d; if (n >= 0 && n < LEVELS.length) { sel = n; beep(400, 0.04, 'triangle', 0.03); } }
+  else if ((k === 'Enter' || k === ' ') && sel <= save.unlocked) start(sel);
+}
+function drawMenu() {
+  ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 56px sans-serif'; ctx.fillText('DUAL DIMENSIONS', W / 2, 90);
+  ctx.fillStyle = '#b9a8ff'; ctx.font = '18px sans-serif'; ctx.fillText('Two worlds. One hero. Shift between them.', W / 2, 138);
+  ctx.fillStyle = '#8a86a8'; ctx.font = '13px sans-serif'; ctx.fillText('Designed and coded entirely by AI', W / 2, 166);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 18px sans-serif'; ctx.fillText('Select a level', W / 2, 220);
+  LEVELS.forEach((lv, i) => {
+    const r = tileRect(i), open = i <= save.unlocked, st = starsFor(i, save.best[i]), cx = r.x + r.w / 2;
+    ctx.fillStyle = i === sel ? '#6a5acd' : open ? '#2d2a4a' : '#1a1930'; ctx.fillRect(r.x, r.y, r.w, r.h);
+    if (i === sel) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.strokeRect(r.x, r.y, r.w, r.h); }
+    ctx.globalAlpha = open ? 1 : 0.4; ctx.fillStyle = '#fff';
+    ctx.font = 'bold 26px sans-serif'; ctx.fillText(open ? String(i + 1) : '🔒', cx, r.y + 26);
+    ctx.font = '12px sans-serif'; ctx.fillText(lv.name, cx, r.y + 52);
+    ctx.fillStyle = '#ffd43b'; ctx.fillText('★'.repeat(st) + '☆'.repeat(3 - st), cx, r.y + 68);
+    ctx.globalAlpha = 1;
+  });
+  ctx.fillStyle = '#8a86a8'; ctx.font = '13px sans-serif';
+  ctx.fillText(touchMode ? 'Tap a level to play' : 'Arrows: select · Enter: play · click a level · M: mute · Esc: back here', W / 2, 462);
+}
+
+// ---------- loop ----------
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 1 / 30); last = now;
+  if (!paused) { update(dt / 2); update(dt / 2); } // two substeps for stable collisions
+  draw();
+  if (paused) {
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, W, H); ctx.fillStyle = '#fff';
+    ctx.font = 'bold 40px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('Paused (press P)', W / 2, H / 2);
+  }
+  requestAnimationFrame(frame);
+}
+start(Math.min(save.unlocked, LEVELS.length - 1));
+openMenu();
+requestAnimationFrame(frame);
+</script>
 </body>
 </html>
