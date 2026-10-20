@@ -4,304 +4,284 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Dual Dimensions</title>
-  <!-- Phaser.js from CDN -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.55.2/phaser.min.js"></script>
   <style>
-    html, body {
-      margin: 0;
-      height: 100%;
-      background: #222;
-      overflow: hidden;
-      touch-action: none; /* stop the page scrolling while swiping */
-    }
+    html, body { margin: 0; height: 100%; background: #14141f; overflow: hidden; touch-action: none; }
     canvas { display: block; }
-    #resetBtn {
-      position: absolute;
-      top: 10px;
-      right: 10px;
-      z-index: 10;
-      padding: 8px 12px;
-      background: #444;
-      color: #fff;
-      cursor: pointer;
-      border-radius: 4px;
-      user-select: none;
-      font-family: sans-serif;
+    #bar { position: absolute; top: 10px; right: 10px; z-index: 10; display: flex; gap: 8px; }
+    #bar button {
+      padding: 8px 14px; background: #3a3a55; color: #fff; border: 0; border-radius: 6px;
+      font: 14px sans-serif; cursor: pointer;
     }
+    #bar button:hover { background: #50507a; }
   </style>
 </head>
 <body>
-<div id="resetBtn">Reset</div>
+<div id="bar"><button id="undoBtn">Undo</button><button id="resetBtn">Reset</button></div>
 <script>
-const tileSize = 32;
-const gridWidth = 10, gridHeight = 10;
-const EMPTY = 0, OBSTACLE = 1, SWITCH = 2, EXIT = 3;
-const SWIPE_MIN = 20; // minimum swipe distance in px
-
-let lightGrid, shadowGrid;
-let currentLevel = 0;
-let characters = {
-  light: { x: 0, y: 0 },
-  shadow: { x: 0, y: 0 }
-};
-
-function makeGrid(cells) {
-  const grid = Array.from({ length: gridHeight }, () => Array(gridWidth).fill(EMPTY));
-  cells.forEach(([x, y, type]) => { grid[y][x] = type; });
-  return grid;
-}
-
-// Switch targets must point at EMPTY/OBSTACLE tiles (they toggle between the two).
-const levels = [
-  {
-    light: {
-      grid: makeGrid([[5, 5, SWITCH], [3, 3, OBSTACLE], [gridWidth - 1, gridHeight - 1, EXIT]]),
-      switches: [{ x: 5, y: 5, target: { world: "shadow", x: 6, y: 6 } }]
-    },
-    shadow: {
-      grid: makeGrid([[4, 4, SWITCH], [6, 6, OBSTACLE], [gridWidth - 1, gridHeight - 1, EXIT]]),
-      switches: [{ x: 4, y: 4, target: { world: "light", x: 3, y: 3 } }]
-    }
-  }
+/*
+  Map legend (one string per row, one char per tile):
+    #  wall            .  floor           P  start (both worlds)
+    E  exit            a-c switch         A-C gate (blocked until opened)
+  Stepping ONTO a switch in one world toggles the matching gate in the OTHER world.
+  Both heroes move together; win when both stand on an exit.
+*/
+const LEVELS = [
+  { name: 'First Steps', hint: 'Both heroes move together. Put both on the cyan exits.',
+    light:  ["P....", ".###.", "..#..", ".#...", "....E"],
+    shadow: ["P.#..", "..#.#", "....#", "##.#.", "....E"] },
+  { name: 'Open Sesame', hint: 'A switch opens the matching gate in the OTHER world.',
+    light:  ["P.a#.", "..##.", "....E", "###..", "....."],
+    shadow: ["P.#..", "..A..", "..#.E", "..#..", "....."] },
+  { name: 'Crossed Wires', hint: '',
+    light:  ["P.#...", "..#.B.", "a.#.#.", "..#.#E", "....#.", "......"],
+    shadow: ["P.....", "..A.#.", "..#.#.", "b.#.#E", "....#.", "......"] },
+  { name: 'Twin Gates', hint: '',
+    light:  ["P..#...", "...#.#.", "a..#.#E", "...#.#.", "...B.#.", ".......", "......."],
+    shadow: ["P..A...", "...#.#.", "...#.#E", "..b#.#.", "...#.#.", ".......", "......."] }
 ];
 
-function loadLevel(levelNum) {
-  const level = levels[levelNum];
-  lightGrid = level.light.grid.map(row => row.slice());
-  shadowGrid = level.shadow.grid.map(row => row.slice());
-  characters.light = { x: 0, y: 0 };
-  characters.shadow = { x: 0, y: 0 };
+const T = 44, GAP = 40, SWIPE_MIN = 20;
+const WORLDS = ['light', 'shadow'];
+const other = w => (w === 'light' ? 'shadow' : 'light');
+const PAL = {
+  light:  { floor: 0xF4D35E, wall: 0x8a6a14, hero: 0x2a4bff },
+  shadow: { floor: 0x4A4E69, wall: 0x14141f, hero: 0x2cff7a }
+};
+const LETTER_COLOR = { a: 0xff8c42, b: 0xe85d9b, c: 0x4cc9f0 };
+
+// ---- persistence (localStorage may be unavailable, so always guarded) ----
+const store = {
+  get() { try { return JSON.parse(localStorage.getItem('dd-save')) || {}; } catch (e) { return {}; } },
+  set(d) { try { localStorage.setItem('dd-save', JSON.stringify(d)); } catch (e) {} }
+};
+let save = Object.assign({ unlocked: 0, best: [] }, store.get());
+
+// ---- tiny synthesized sound effects (no external assets) ----
+function beep(freq, dur = 0.08) {
+  try {
+    const ctx = game.sound.context;
+    if (!ctx) return;
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.value = freq; g.gain.value = 0.05;
+    o.connect(g); g.connect(ctx.destination);
+    o.start(); o.stop(ctx.currentTime + dur);
+  } catch (e) {}
 }
 
-function isWalkable(x, y, grid) {
-  return x >= 0 && y >= 0 && x < gridWidth && y < gridHeight && grid[y][x] !== OBSTACLE;
-}
+const isGate = c => c >= 'A' && c <= 'Z' && c !== 'E' && c !== 'P';
+const isSwitch = c => c >= 'a' && c <= 'z';
 
-function moveCharacter(world, direction) {
-  const grid = world === "light" ? lightGrid : shadowGrid;
-  const pos = characters[world];
-  const [dx, dy] = direction === 'left' ? [-1, 0] :
-                   direction === 'right' ? [1, 0] :
-                   direction === 'up' ? [0, -1] : [0, 1];
-  const newX = pos.x + dx, newY = pos.y + dy;
-  if (isWalkable(newX, newY, grid)) {
-    pos.x = newX;
-    pos.y = newY;
-  }
-}
-
-class DualDimensionsScene extends Phaser.Scene {
-  constructor() {
-    super({ key: 'DualDimensionsScene' });
-  }
-
-  preload() {
-    // Optional SFX. If it fails to load, the game still works (see playSwitch).
-    this.load.audio('switch', 'https://assets.kenney.nl/Sounds/audioPack3/switch3.ogg');
-  }
+class DualDimensions extends Phaser.Scene {
+  constructor() { super('DualDimensions'); }
 
   create() {
-    this.won = false;
-    this.victoryObjects = [];
+    this.gfx = this.add.graphics();
+    const txt = (x, y, size, color) => this.add.text(x, y, '', { fontFamily: 'sans-serif', fontSize: size + 'px', color });
+    this.title = txt(20, 14, 20, '#ffffff');
+    this.sub = txt(20, 42, 14, '#aab');
+    this.labels = { light: txt(0, 0, 14, '#F4D35E'), shadow: txt(0, 0, 14, '#9a9cc4') };
+    this.add.text(400, 584, 'Arrows / WASD or swipe · Z undo · R reset', { fontFamily: 'sans-serif', fontSize: '13px', color: '#889' }).setOrigin(0.5);
 
-    // Generate the particle texture locally instead of depending on a remote image
-    if (!this.textures.exists('spark')) {
-      const g = this.make.graphics({ x: 0, y: 0, add: false });
-      g.fillStyle(0xffffff, 1);
-      g.fillCircle(8, 8, 8);
-      g.generateTexture('spark', 16, 16);
-      g.destroy();
-    }
-
-    loadLevel(currentLevel);
-
-    this.lightGraphics = this.add.graphics();
-    this.shadowGraphics = this.add.graphics();
-    this.drawGrids();
-
-    // Keyboard input (also stops arrow keys from scrolling the page)
-    this.input.keyboard.addCapture('UP,DOWN,LEFT,RIGHT');
-    this.input.keyboard.on('keydown', (event) => {
-      const direction = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" }[event.key];
-      if (direction) this.handleMove(direction);
+    this.heroes = {};
+    WORLDS.forEach(w => {
+      this.heroes[w] = this.add.rectangle(0, 0, T - 18, T - 18, PAL[w].hero).setStrokeStyle(2, 0xffffff).setDepth(2);
     });
 
-    // Swipe controls. Uses downX/downY (a fixed snapshot of where the press began)
-    // and ignores taps / tiny movements.
-    this.input.on('pointerup', (pointer) => {
-      const dx = pointer.x - pointer.downX;
-      const dy = pointer.y - pointer.downY;
-      if (Math.max(Math.abs(dx), Math.abs(dy)) < SWIPE_MIN) return;
-      if (Math.abs(dx) > Math.abs(dy)) this.handleMove(dx > 0 ? 'right' : 'left');
-      else this.handleMove(dy > 0 ? 'down' : 'up');
-    });
-
-    // Reset button (DOM element). Listener is removed when the scene shuts down
-    // so restarting the scene can't stack up duplicates.
-    const resetBtn = document.getElementById('resetBtn');
-    this.onReset = () => this.resetLevel();
-    resetBtn.addEventListener('click', this.onReset);
-    // Keep presses on the button from reaching Phaser's global input listeners
-    ['mousedown', 'mouseup', 'touchstart', 'touchend'].forEach(evt =>
-      resetBtn.addEventListener(evt, (e) => e.stopPropagation())
+    this.tabs = LEVELS.map((_, i) =>
+      this.add.text(0, 552, String(i + 1), { fontFamily: 'sans-serif', fontSize: '18px', color: '#fff', backgroundColor: '#3a3a55', padding: { x: 10, y: 4 } })
+        .setOrigin(0.5).setPosition(400 + (i - (LEVELS.length - 1) / 2) * 44, 552)
+        .on('pointerdown', () => { if (i <= save.unlocked) this.start(i); })
     );
-    this.events.once('shutdown', () => resetBtn.removeEventListener('click', this.onReset));
+    this.overlay = [];
 
-    // Editor button placeholder
-    this.editorBtn = this.add.text(10, 10, '🛠 Editor', { fill: '#FFF' })
-      .setInteractive()
-      .on('pointerdown', () => {
-        // this.scene.start('LevelEditorScene'); // to be implemented
-      });
-  }
-
-  resetLevel() {
-    this.clearVictory();
-    loadLevel(currentLevel);
-    this.drawGrids();
-  }
-
-  clearVictory() {
-    this.victoryObjects.forEach(obj => obj.destroy());
-    this.victoryObjects = [];
-    this.won = false;
-  }
-
-  handleMove(direction) {
-    if (this.won) return; // no moving after winning
-
-    const before = {
-      light: { ...characters.light },
-      shadow: { ...characters.shadow }
-    };
-    moveCharacter("light", direction);
-    moveCharacter("shadow", direction);
-    this.checkSwitches(before);
-    this.drawGrids();
-    if (this.checkVictory()) this.victoryScreen();
-  }
-
-  playSwitch() {
-    // sound.play() throws if the audio failed to load, so check first
-    if (this.cache.audio.exists('switch')) this.sound.play('switch');
-  }
-
-  checkSwitches(before) {
-    for (const world of ['light', 'shadow']) {
-      const pos = characters[world];
-
-      // Only fire when the character actually ENTERS the switch tile
-      if (pos.x === before[world].x && pos.y === before[world].y) continue;
-
-      const sw = levels[currentLevel][world].switches.find(s => s.x === pos.x && s.y === pos.y);
-      if (!sw) continue;
-
-      const targetWorld = sw.target.world;
-      const grid = targetWorld === "light" ? lightGrid : shadowGrid;
-      const { x, y } = sw.target;
-      const tile = grid[y][x];
-
-      // Only toggle plain floor <-> obstacle (never corrupt switch/exit tiles)
-      if (tile !== EMPTY && tile !== OBSTACLE) continue;
-
-      // Don't drop an obstacle on top of the character standing there
-      const occupant = characters[targetWorld];
-      if (tile === EMPTY && occupant.x === x && occupant.y === y) continue;
-
-      grid[y][x] = tile === EMPTY ? OBSTACLE : EMPTY;
-      this.playSwitch();
-    }
-  }
-
-  checkVictory() {
-    return lightGrid[characters.light.y][characters.light.x] === EXIT &&
-           shadowGrid[characters.shadow.y][characters.shadow.x] === EXIT;
-  }
-
-  victoryScreen() {
-    this.won = true;
-
-    const particles = this.add.particles('spark');
-    const emitter = particles.createEmitter({
-      speed: { min: 50, max: 200 },
-      scale: { start: 0.6, end: 0 },
-      blendMode: 'ADD',
-      lifespan: 800,
-      on: false
+    // keyboard
+    this.input.keyboard.addCapture('UP,DOWN,LEFT,RIGHT,SPACE');
+    const dirs = { ArrowLeft: 'left', a: 'left', ArrowRight: 'right', d: 'right', ArrowUp: 'up', w: 'up', ArrowDown: 'down', s: 'down' };
+    this.input.keyboard.on('keydown', e => {
+      const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+      if (dirs[k]) this.move(dirs[k]);
+      else if (k === 'z' || k === 'u') this.undo();
+      else if (k === 'r') this.start(this.level);
+      else if ((k === 'Enter' || k === ' ') && this.won) this.next();
     });
-    emitter.explode(50, 400, 300); // one burst instead of endless emission
 
-    const nextBtn = this.add.text(300, 400, 'Next Level', { fontSize: '32px', fill: '#0F0' })
-      .setInteractive({ useHandCursor: true })
-      .on('pointerdown', () => {
-        currentLevel = (currentLevel + 1) % levels.length;
-        this.resetLevel(); // also clears the victory objects
-      });
+    // swipe (uses downX/downY so it's a real start point; taps are ignored)
+    this.input.on('pointerup', p => {
+      const dx = p.x - p.downX, dy = p.y - p.downY;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < SWIPE_MIN) return;
+      this.move(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up'));
+    });
 
-    this.victoryObjects.push(particles, nextBtn);
-  }
-
-  drawGrids() {
-    this.lightGraphics.clear();
-    this.shadowGraphics.clear();
-
-    const offsetX = 50, offsetY = 50;
-    const offsetX2 = offsetX + gridWidth * tileSize + 50;
-
-    for (let row = 0; row < gridHeight; row++) {
-      for (let col = 0; col < gridWidth; col++) {
-        this.drawTile(this.lightGraphics, lightGrid[row][col], offsetX, offsetY, col, row, "light");
-        this.drawTile(this.shadowGraphics, shadowGrid[row][col], offsetX2, offsetY, col, row, "shadow");
-      }
-    }
-  }
-
-  drawTile(graphics, tile, offsetX, offsetY, col, row, world) {
-    const colors = {
-      [EMPTY]: world === "light" ? 0xF4D35E : 0x4A4E69,
-      [OBSTACLE]: 0xFF0000,
-      [SWITCH]: world === "light" ? 0x7AC74F : 0x22223B,
-      [EXIT]: 0x00FFFF
+    // DOM buttons
+    const bind = (id, fn) => {
+      const el = document.getElementById(id);
+      el.addEventListener('click', fn);
+      ['mousedown', 'mouseup', 'touchstart', 'touchend'].forEach(ev => el.addEventListener(ev, e => e.stopPropagation()));
     };
-    const px = offsetX + col * tileSize;
-    const py = offsetY + row * tileSize;
+    bind('undoBtn', () => this.undo());
+    bind('resetBtn', () => this.start(this.level));
 
-    graphics.fillStyle(colors[tile], 1);
-    graphics.fillRect(px, py, tileSize - 2, tileSize - 2);
+    this.start(Math.min(save.unlocked, LEVELS.length - 1));
+  }
 
-    // Grid border
-    graphics.lineStyle(1, 0xFFFFFF, 0.2);
-    graphics.strokeRect(px, py, tileSize, tileSize);
+  // ---------- level setup ----------
+  start(i) {
+    this.level = i;
+    this.overlay.forEach(o => o.destroy());
+    this.overlay = [];
+    this.won = false;
+    this.moves = 0;
+    this.history = [];
 
-    // Switch marker
-    if (tile === SWITCH) {
-      graphics.fillStyle(0xFFFFFF, 0.5);
-      graphics.fillCircle(px + tileSize / 2, py + tileSize / 2, 8);
-    }
+    const lv = LEVELS[i];
+    this.map = {}; this.pos = {}; this.open = {};
+    WORLDS.forEach(w => {
+      this.map[w] = lv[w].map(r => r.split(''));
+      this.open[w] = { a: false, b: false, c: false };
+      this.map[w].forEach((row, y) => row.forEach((c, x) => {
+        if (c === 'P') { this.pos[w] = { x, y }; row[x] = '.'; }
+      }));
+    });
 
-    // Character: drawn smaller so the tile underneath (switch/exit) stays visible
-    if (characters[world].x === col && characters[world].y === row) {
-      graphics.fillStyle(world === "light" ? 0x0000FF : 0x00FF00, 1);
-      graphics.fillRect(px + 7, py + 7, tileSize - 16, tileSize - 16);
-    }
+    this.W = this.map.light[0].length;
+    this.H = this.map.light.length;
+    const totalW = 2 * this.W * T + GAP;
+    this.ox = { light: (800 - totalW) / 2 };
+    this.ox.shadow = this.ox.light + this.W * T + GAP;
+    this.oy = (520 - this.H * T) / 2 + 50;
+
+    WORLDS.forEach(w => this.labels[w].setText(w.toUpperCase()).setPosition(this.ox[w], this.oy - 22));
+    this.title.setText(`Level ${i + 1}/${LEVELS.length} — ${lv.name}`);
+    this.refresh(false);
+    save.current = i; store.set(save);
+  }
+
+  refresh(animate = true) {
+    WORLDS.forEach(w => {
+      const x = this.ox[w] + this.pos[w].x * T + T / 2;
+      const y = this.oy + this.pos[w].y * T + T / 2;
+      this.tweens.killTweensOf(this.heroes[w]);
+      if (animate) this.tweens.add({ targets: this.heroes[w], x, y, duration: 90 });
+      else this.heroes[w].setPosition(x, y);
+    });
+    this.draw();
+    const best = save.best[this.level];
+    this.sub.setText(`Moves: ${this.moves}${best ? '   Best: ' + best : ''}` + (LEVELS[this.level].hint ? '\n' + LEVELS[this.level].hint : ''));
+    this.tabs.forEach((t, i) => {
+      t.setAlpha(i <= save.unlocked ? 1 : 0.3);
+      t.setStyle({ backgroundColor: i === this.level ? '#6a5acd' : '#3a3a55' });
+      i <= save.unlocked ? t.setInteractive({ useHandCursor: true }) : t.disableInteractive();
+    });
+  }
+
+  // ---------- rules ----------
+  cell(w, x, y) {
+    return y >= 0 && y < this.H && x >= 0 && x < this.W ? this.map[w][y][x] : '#';
+  }
+  blocked(w, x, y) {
+    const c = this.cell(w, x, y);
+    return c === '#' || (isGate(c) && !this.open[w][c.toLowerCase()]);
+  }
+
+  move(dir) {
+    if (this.won) return;
+    const [dx, dy] = { left: [-1, 0], right: [1, 0], up: [0, -1], down: [0, 1] }[dir];
+    const snap = JSON.stringify({ pos: this.pos, open: this.open, moves: this.moves });
+    const moved = [];
+
+    WORLDS.forEach(w => {
+      const nx = this.pos[w].x + dx, ny = this.pos[w].y + dy;
+      if (!this.blocked(w, nx, ny)) { this.pos[w] = { x: nx, y: ny }; moved.push(w); }
+    });
+    if (!moved.length) { beep(110, 0.05); return; } // bumped: no move counted
+
+    this.history.push(snap);
+    this.moves++;
+    // entering a switch toggles that letter's gate in the other world
+    moved.forEach(w => {
+      const c = this.cell(w, this.pos[w].x, this.pos[w].y);
+      if (isSwitch(c)) { this.open[other(w)][c] = !this.open[other(w)][c]; beep(520); }
+    });
+    beep(300, 0.04);
+    this.refresh();
+    if (WORLDS.every(w => this.cell(w, this.pos[w].x, this.pos[w].y) === 'E')) this.win();
+  }
+
+  undo() {
+    if (this.won || !this.history.length) return;
+    const s = JSON.parse(this.history.pop());
+    this.pos = s.pos; this.open = s.open; this.moves = s.moves;
+    this.refresh();
+  }
+
+  // ---------- win flow ----------
+  win() {
+    this.won = true;
+    const prev = save.best[this.level];
+    const record = !prev || this.moves < prev;
+    if (record) save.best[this.level] = this.moves;
+    save.unlocked = Math.max(save.unlocked, Math.min(this.level + 1, LEVELS.length - 1));
+    store.set(save);
+    beep(660, 0.12); setTimeout(() => beep(880, 0.2), 120);
+
+    const last = this.level === LEVELS.length - 1;
+    const dim = this.add.rectangle(400, 300, 800, 600, 0x000000, 0.6).setDepth(5).setInteractive()
+      .on('pointerdown', () => this.next());
+    const t = this.add.text(400, 270, last ? 'All levels complete! 🎉' : 'Level complete!', { fontFamily: 'sans-serif', fontSize: '40px', color: '#7dffb0' }).setOrigin(0.5).setDepth(6);
+    const s = this.add.text(400, 325, `${this.moves} moves${record ? ' — new best!' : ' (best ' + prev + ')'}`, { fontFamily: 'sans-serif', fontSize: '22px', color: '#fff' }).setOrigin(0.5).setDepth(6);
+    const n = this.add.text(400, 380, last ? 'Tap / Enter to play again' : 'Tap / Enter for next level', { fontFamily: 'sans-serif', fontSize: '18px', color: '#aab' }).setOrigin(0.5).setDepth(6);
+    this.overlay.push(dim, t, s, n);
+    [t, s, n].forEach((o, k) => { o.setAlpha(0); this.tweens.add({ targets: o, alpha: 1, duration: 250, delay: k * 100 }); });
+    this.refresh(false);
+  }
+
+  next() { this.start((this.level + 1) % LEVELS.length); }
+
+  // ---------- drawing ----------
+  draw() {
+    const g = this.gfx;
+    g.clear();
+    WORLDS.forEach(w => {
+      for (let y = 0; y < this.H; y++) {
+        for (let x = 0; x < this.W; x++) {
+          const c = this.map[w][y][x];
+          const px = this.ox[w] + x * T, py = this.oy + y * T;
+          g.fillStyle(c === '#' ? PAL[w].wall : PAL[w].floor, 1);
+          g.fillRect(px, py, T - 2, T - 2);
+
+          if (c === 'E') {
+            g.fillStyle(0x00ffff, 1); g.fillRect(px + 4, py + 4, T - 10, T - 10);
+            g.fillStyle(0xffffff, 0.6); g.fillRect(px + 12, py + 12, T - 26, T - 26);
+          } else if (isSwitch(c)) {
+            g.fillStyle(LETTER_COLOR[c], 1); g.fillCircle(px + T / 2 - 1, py + T / 2 - 1, 11);
+            g.lineStyle(2, 0xffffff, 0.8); g.strokeCircle(px + T / 2 - 1, py + T / 2 - 1, 11);
+          } else if (isGate(c)) {
+            const col = LETTER_COLOR[c.toLowerCase()];
+            if (this.open[w][c.toLowerCase()]) {
+              g.lineStyle(2, col, 0.9); g.strokeRect(px + 3, py + 3, T - 8, T - 8);
+            } else {
+              g.fillStyle(col, 1); g.fillRect(px, py, T - 2, T - 2);
+              g.fillStyle(0x000000, 0.35);
+              for (let k = 1; k < 4; k++) g.fillRect(px + k * 10 - 2, py + 2, 4, T - 6);
+            }
+          }
+          g.lineStyle(1, 0xffffff, 0.12);
+          g.strokeRect(px, py, T, T);
+        }
+      }
+    });
   }
 }
 
-const config = {
+const game = new Phaser.Game({
   type: Phaser.AUTO,
   width: 800,
   height: 600,
-  backgroundColor: "#222",
-  // Scales to fit any screen and keeps pointer coordinates correct,
-  // replacing the old CSS transform: scale(0.8) hack
-  scale: {
-    mode: Phaser.Scale.FIT,
-    autoCenter: Phaser.Scale.CENTER_BOTH
-  },
-  scene: [DualDimensionsScene]
-};
-
-const game = new Phaser.Game(config);
+  backgroundColor: '#14141f',
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scene: [DualDimensions]
+});
 </script>
 </body>
 </html>
