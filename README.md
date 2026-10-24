@@ -25,6 +25,10 @@ This game was designed and coded entirely by AI ([Claude](https://claude.ai) by 
 | Orange spikes | Deadly only in **Light** |
 | Purple spikes | Deadly only in **Shadow** |
 
+## Install on your phone
+
+Open the play link on your phone and use **Add to Home Screen** to install it as an offline app. Store builds (Google Play / App Store) are covered in [PUBLISHING.md](PUBLISHING.md).
+
 ## Controls
 
 | Action | Keyboard | Touch |
@@ -49,9 +53,14 @@ This game was designed and coded entirely by AI ([Claude](https://claude.ai) by 
 ## Project structure
 
 ```
-index.html   the whole game: styles, level data (top of the script) and engine
-README.md    this file
-CHANGELOG.md version history
+index.html             the whole game: styles, level data and engine
+manifest.webmanifest   installable-app info
+sw.js                  offline support
+privacy.html           privacy policy (needed for the app stores)
+package.json, capacitor.config.json, build.mjs   wraps the game into Android/iOS apps
+.github/workflows/     cloud build for the Android app
+store-assets/          store icon and feature graphic
+PUBLISHING.md          step-by-step store guide
 ```
 
 ## Run locally

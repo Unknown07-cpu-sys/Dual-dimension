@@ -2,15 +2,23 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <meta name="description" content="Dual Dimensions: a puzzle-platformer where you shift between two worlds. Designed and coded entirely by AI." />
 <meta name="theme-color" content="#0b0a16" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="Dual Dimensions" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <title>Dual Dimensions</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌗</text></svg>" />
 <style>
-html, body { margin: 0; height: 100%; background: #0b0a16; overflow: hidden; touch-action: none; }
-body { display: flex; align-items: center; justify-content: center; }
-canvas { width: min(100vw, calc(100vh * 5 / 3)); aspect-ratio: 5 / 3; display: block; touch-action: none; }
+html, body { margin: 0; height: 100%; background: #0b0a16; overflow: hidden; touch-action: none; overscroll-behavior: none;
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+body { display: flex; align-items: center; justify-content: center; box-sizing: border-box;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+canvas { width: min(100%, calc((100vh - env(safe-area-inset-top) - env(safe-area-inset-bottom)) * 5 / 3)); aspect-ratio: 5 / 3; display: block; touch-action: none; }
 </style>
 </head>
 <body>
@@ -120,7 +128,7 @@ const store = {
   get() { try { return JSON.parse(localStorage.getItem('dd-save')) || {}; } catch (e) { return {}; } },
   set(d) { try { localStorage.setItem('dd-save', JSON.stringify(d)); } catch (e) {} }
 };
-const save = Object.assign({ unlocked: 0, best: {}, muted: false, music: false }, store.get());
+const save = Object.assign({ unlocked: 0, best: {}, muted: false, music: false, haptics: true }, store.get());
 let muted = !!save.muted, music = !!save.music;
 
 let actx = null;
@@ -210,6 +218,7 @@ addEventListener('keydown', e => {
   if (k.startsWith('Arrow') || k === ' ') e.preventDefault();
   if (k === 'm') { toggleSound(); return; }
   if (k === 'n') { toggleMusic(); return; }
+  if (k === 'v') { toggleHaptics(); return; }
   if (k === 'Escape') { openMenu(); return; }
   if (state === 'menu') { menuKey(k); return; }
   if (k === 'p' && state === 'play') { paused = !paused; return; }
@@ -236,10 +245,12 @@ cv.addEventListener('pointerdown', e => {
   audio();
   if (e.pointerType === 'touch') touchMode = true;
   e.preventDefault();
+  if (paused) { paused = false; return; }
   if (state === 'menu') {
     const p = pt(e);
     if (inRect(p, SND_BTN)) { toggleSound(); return; }
     if (inRect(p, MUS_BTN)) { toggleMusic(); return; }
+    if (inRect(p, HAP_BTN)) { toggleHaptics(); return; }
     LEVELS.forEach((_, i) => { const r = tileRect(i); if (i <= save.unlocked && p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h) start(i); });
     return;
   }
@@ -265,16 +276,16 @@ function burst(x, y, color, n = 14, sp = 160) {
 function tryShift() {
   if (state !== 'play') return;
   const nd = 1 - dim;
-  if (hits(hero.x, hero.y, hero.w, hero.h, nd) || touchingSpike(nd)) { blocked = 0.35; shake = 0.15; beep(90, 0.12, 'sine', 0.03); return; }
+  if (hits(hero.x, hero.y, hero.w, hero.h, nd) || touchingSpike(nd)) { blocked = 0.35; shake = 0.15; beep(90, 0.12, 'sine', 0.03); haptic('light'); return; }
   dim = nd; updateMusic();
   burst(hero.x + hero.w / 2, hero.y + hero.h / 2, dim ? '#b9a8ff' : '#ffe08a', 18, 220);
-  beep(dim ? 220 : 520, 0.12, 'sine', 0.03);
+  beep(dim ? 220 : 520, 0.12, 'sine', 0.03); haptic('light');
 }
 function die() {
   if (state !== 'play') return;
   state = 'dead'; deadT = 0.6; deaths++; flash = 0.3; shake = 0.25;
   burst(hero.x + hero.w / 2, hero.y + hero.h / 2, '#ff4d6d', 30, 260);
-  beep(140, 0.2, 'sine', 0.035);
+  beep(140, 0.2, 'sine', 0.035); haptic('heavy');
 }
 function win() {
   state = 'won'; msgT = 0;
@@ -283,7 +294,7 @@ function win() {
   save.unlocked = Math.max(save.unlocked, Math.min(lvl + 1, LEVELS.length - 1));
   store.set(save);
   burst(goal.c * T + 16, goal.r * T + 16, '#7dffb0', 40, 280);
-  beep(660, 0.15); setTimeout(() => beep(880, 0.25), 140);
+  haptic('heavy'); beep(660, 0.15); setTimeout(() => beep(880, 0.25), 140);
 }
 
 // ---------- update ----------
@@ -455,9 +466,10 @@ function draw() {
 }
 
 // ---------- menu ----------
-const SND_BTN = { x: 190, y: 436, w: 190, h: 24 }, MUS_BTN = { x: 420, y: 436, w: 190, h: 24 };
+const HAP_BTN = { x: 90, y: 436, w: 190, h: 24 }, SND_BTN = { x: 305, y: 436, w: 190, h: 24 }, MUS_BTN = { x: 520, y: 436, w: 190, h: 24 };
 const inRect = (p, b) => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
 function toggleSound() { muted = !muted; save.muted = muted; store.set(save); updateMusic(); }
+function toggleHaptics() { save.haptics = !save.haptics; store.set(save); haptic('light'); }
 function toggleMusic() { music = !music; save.music = music; store.set(save); updateMusic(); }
 const MCOLS = 5;
 const tileRect = i => ({ x: 68 + (i % MCOLS) * 136, y: 250 + Math.floor(i / MCOLS) * 96, w: 120, h: 80 });
@@ -486,7 +498,7 @@ function drawMenu() {
     ctx.globalAlpha = 1;
   });
   ctx.fillStyle = '#8a86a8'; ctx.font = '13px sans-serif';
-  [[SND_BTN, 'Sound: ' + (muted ? 'OFF' : 'ON') + (touchMode ? '' : '  (M)')], [MUS_BTN, 'Music: ' + (music && !muted ? 'ON' : 'OFF') + (touchMode ? '' : '  (N)')]].forEach(([b, label]) => {
+  [[HAP_BTN, 'Vibration: ' + (save.haptics ? 'ON' : 'OFF') + (touchMode ? '' : '  (V)')], [SND_BTN, 'Sound: ' + (muted ? 'OFF' : 'ON') + (touchMode ? '' : '  (M)')], [MUS_BTN, 'Music: ' + (music && !muted ? 'ON' : 'OFF') + (touchMode ? '' : '  (N)')]].forEach(([b, label]) => {
     ctx.fillStyle = '#2d2a4a'; ctx.fillRect(b.x, b.y, b.w, b.h);
     ctx.fillStyle = '#fff'; ctx.font = '13px sans-serif'; ctx.fillText(label, b.x + b.w / 2, b.y + b.h / 2);
   });
@@ -502,10 +514,35 @@ function frame(now) {
   draw();
   if (paused) {
     ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, W, H); ctx.fillStyle = '#fff';
-    ctx.font = 'bold 40px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('Paused (press P)', W / 2, H / 2);
+    ctx.font = 'bold 40px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('Paused - tap or press P', W / 2, H / 2);
   }
   requestAnimationFrame(frame);
 }
+// ---------- app / store integration (Capacitor plugins are optional; safe in a plain browser) ----------
+const Cap = window.Capacitor;
+const plug = n => (Cap && Cap.Plugins && Cap.Plugins[n]) || null;
+function haptic(kind) {
+  if (!save.haptics) return;
+  try {
+    const H = plug('Haptics');
+    if (H) H.impact({ style: kind === 'heavy' ? 'HEAVY' : 'LIGHT' });
+    else if (navigator.vibrate) navigator.vibrate(kind === 'heavy' ? 40 : 12);
+  } catch (e) {}
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { if (state === 'play') paused = true; if (actx && actx.state === 'running') actx.suspend(); }
+  else if (actx) actx.resume();
+});
+addEventListener('contextmenu', e => e.preventDefault());
+(function nativeInit() {
+  const A = plug('App'), SO = plug('ScreenOrientation'), SB = plug('StatusBar');
+  try { if (A) A.addListener('backButton', () => { if (state === 'menu') A.exitApp(); else openMenu(); }); } catch (e) {}
+  try { if (SO) SO.lock({ orientation: 'landscape' }); } catch (e) {}
+  try { if (SB) SB.hide(); } catch (e) {}
+  const native = Cap && Cap.isNativePlatform && Cap.isNativePlatform();
+  if (!native && 'serviceWorker' in navigator && /^https?:/.test(location.protocol)) navigator.serviceWorker.register('sw.js').catch(() => {});
+})();
+
 start(Math.min(save.unlocked, LEVELS.length - 1));
 openMenu();
 requestAnimationFrame(frame);

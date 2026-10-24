@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.0
+- Store-ready: installable offline web app (PWA) plus Capacitor setup for Android and iOS
+- Landscape fullscreen, notch-safe layout, auto-pause when backgrounded, tap to resume, Android back button support
+- Vibration feedback with a Vibration toggle (V or the level menu)
+- New app icon, store icon, feature graphic and privacy policy
+- Cloud Android build workflow and a full publishing guide (PUBLISHING.md)
+
 ## 0.3.1
 - Quieter, softer sound effects; no sound on jumps
 - Ambient music is now off by default and optional (N key or menu toggle)

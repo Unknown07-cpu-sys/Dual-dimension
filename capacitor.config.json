@@ -1,0 +1,9 @@
+{
+  "appId": "io.github.unknown07.dualdimensions",
+  "appName": "Dual Dimensions",
+  "webDir": "www",
+  "backgroundColor": "#0b0a16",
+  "ios": {
+    "contentInset": "never"
+  }
+}

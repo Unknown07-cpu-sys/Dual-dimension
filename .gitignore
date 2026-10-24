@@ -1,10 +1,17 @@
-# OS / editor files
+# OS / editor
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
 
-# Tooling
+# Build output
 node_modules/
+www/
 *.log
 *.zip
+
+# NEVER commit signing keys
+*.jks
+*.keystore
+keystore*
+local.properties
