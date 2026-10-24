@@ -120,12 +120,12 @@ const store = {
   get() { try { return JSON.parse(localStorage.getItem('dd-save')) || {}; } catch (e) { return {}; } },
   set(d) { try { localStorage.setItem('dd-save', JSON.stringify(d)); } catch (e) {} }
 };
-const save = Object.assign({ unlocked: 0, best: {}, muted: false }, store.get());
-let muted = !!save.muted;
+const save = Object.assign({ unlocked: 0, best: {}, muted: false, music: false }, store.get());
+let muted = !!save.muted, music = !!save.music;
 
 let actx = null;
 function audio() { try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === 'suspended') actx.resume(); startMusic(); } catch (e) {} }
-function beep(f, d = 0.08, type = 'sine', v = 0.06) {
+function beep(f, d = 0.08, type = 'sine', v = 0.03) {
   if (!actx || muted) return;
   try {
     const o = actx.createOscillator(), g = actx.createGain();
@@ -147,7 +147,7 @@ function startMusic() {
 function updateMusic() {
   if (!pad) return;
   const n = actx.currentTime;
-  pad.gn.gain.setTargetAtTime(muted ? 0 : 0.03, n, 0.4);
+  pad.gn.gain.setTargetAtTime(music && !muted ? 0.012 : 0, n, 0.4);
   pad.o1.frequency.setTargetAtTime(dim ? 160 : 220, n, 0.15);
   pad.o2.frequency.setTargetAtTime(dim ? 240 : 330, n, 0.15);
 }
@@ -208,7 +208,8 @@ addEventListener('keydown', e => {
   audio();
   const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
   if (k.startsWith('Arrow') || k === ' ') e.preventDefault();
-  if (k === 'm') { muted = !muted; save.muted = muted; store.set(save); updateMusic(); return; }
+  if (k === 'm') { toggleSound(); return; }
+  if (k === 'n') { toggleMusic(); return; }
   if (k === 'Escape') { openMenu(); return; }
   if (state === 'menu') { menuKey(k); return; }
   if (k === 'p' && state === 'play') { paused = !paused; return; }
@@ -237,6 +238,8 @@ cv.addEventListener('pointerdown', e => {
   e.preventDefault();
   if (state === 'menu') {
     const p = pt(e);
+    if (inRect(p, SND_BTN)) { toggleSound(); return; }
+    if (inRect(p, MUS_BTN)) { toggleMusic(); return; }
     LEVELS.forEach((_, i) => { const r = tileRect(i); if (i <= save.unlocked && p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h) start(i); });
     return;
   }
@@ -262,16 +265,16 @@ function burst(x, y, color, n = 14, sp = 160) {
 function tryShift() {
   if (state !== 'play') return;
   const nd = 1 - dim;
-  if (hits(hero.x, hero.y, hero.w, hero.h, nd) || touchingSpike(nd)) { blocked = 0.35; shake = 0.15; beep(90, 0.15, 'square', 0.05); return; }
+  if (hits(hero.x, hero.y, hero.w, hero.h, nd) || touchingSpike(nd)) { blocked = 0.35; shake = 0.15; beep(90, 0.12, 'sine', 0.03); return; }
   dim = nd; updateMusic();
   burst(hero.x + hero.w / 2, hero.y + hero.h / 2, dim ? '#b9a8ff' : '#ffe08a', 18, 220);
-  beep(dim ? 220 : 520, 0.15, 'triangle', 0.07);
+  beep(dim ? 220 : 520, 0.12, 'sine', 0.03);
 }
 function die() {
   if (state !== 'play') return;
   state = 'dead'; deadT = 0.6; deaths++; flash = 0.3; shake = 0.25;
   burst(hero.x + hero.w / 2, hero.y + hero.h / 2, '#ff4d6d', 30, 260);
-  beep(140, 0.3, 'sawtooth', 0.07);
+  beep(140, 0.2, 'sine', 0.035);
 }
 function win() {
   state = 'won'; msgT = 0;
@@ -303,7 +306,7 @@ function update(dt) {
   hero.vy = Math.min(hero.vy + 1700 * dt, 900);
   hero.coyote = hero.ground ? 0.1 : hero.coyote - dt;
   hero.buffer -= dt;
-  if (hero.buffer > 0 && hero.coyote > 0) { hero.vy = -620; hero.buffer = 0; hero.coyote = 0; beep(380, 0.06, 'square', 0.03); }
+  if (hero.buffer > 0 && hero.coyote > 0) { hero.vy = -620; hero.buffer = 0; hero.coyote = 0; }
   if (!held && hero.vy < -230) hero.vy = -230; // variable jump height
 
   hero.x += hero.vx * dt;
@@ -322,7 +325,7 @@ function update(dt) {
   const cx = hero.x + hero.w / 2, cy = hero.y + hero.h / 2;
   shards.forEach(s => {
     if (!s.got && Math.hypot(cx - (s.c * T + 16), cy - (s.r * T + 16)) < 24) {
-      s.got = true; collected++; burst(s.c * T + 16, s.r * T + 16, '#5df2ff', 12, 140); beep(700 + collected * 90, 0.1, 'triangle', 0.06);
+      s.got = true; collected++; burst(s.c * T + 16, s.r * T + 16, '#5df2ff', 12, 140); beep(700 + collected * 90, 0.08, 'sine', 0.03);
     }
   });
   if (goal && Math.abs(cx - (goal.c * T + 16)) < 18 && Math.abs(cy - (goal.r * T + 16)) < 22) {
@@ -422,7 +425,7 @@ function draw() {
   ctx.fillText(LEVELS[lvl].hint, W / 2, 40);
   if (msgT > 0) { ctx.fillStyle = '#ff4d6d'; ctx.font = 'bold 16px sans-serif'; ctx.fillText('Collect all shards first!', W / 2, 62); }
   ctx.globalAlpha = 0.55; ctx.fillStyle = fg; ctx.font = '12px sans-serif';
-  if (!touchMode) ctx.fillText('←/→ move · ↑/Space jump · Shift: switch dimension · R restart · P pause · M mute · Esc menu', W / 2, H - 18);
+  if (!touchMode) ctx.fillText('←/→ move · ↑/Space jump · Shift: switch dimension · R restart · P pause · M sound · N music · Esc menu', W / 2, H - 18);
   ctx.globalAlpha = 1;
 
   if (touchMode) {
@@ -452,6 +455,10 @@ function draw() {
 }
 
 // ---------- menu ----------
+const SND_BTN = { x: 190, y: 436, w: 190, h: 24 }, MUS_BTN = { x: 420, y: 436, w: 190, h: 24 };
+const inRect = (p, b) => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
+function toggleSound() { muted = !muted; save.muted = muted; store.set(save); updateMusic(); }
+function toggleMusic() { music = !music; save.music = music; store.set(save); updateMusic(); }
 const MCOLS = 5;
 const tileRect = i => ({ x: 68 + (i % MCOLS) * 136, y: 250 + Math.floor(i / MCOLS) * 96, w: 120, h: 80 });
 const starsFor = (i, t) => (t == null ? 0 : t <= LEVELS[i].par ? 3 : t <= LEVELS[i].par * 1.6 ? 2 : 1);
@@ -479,7 +486,12 @@ function drawMenu() {
     ctx.globalAlpha = 1;
   });
   ctx.fillStyle = '#8a86a8'; ctx.font = '13px sans-serif';
-  ctx.fillText(touchMode ? 'Tap a level to play' : 'Arrows: select · Enter: play · click a level · M: mute · Esc: back here', W / 2, 462);
+  [[SND_BTN, 'Sound: ' + (muted ? 'OFF' : 'ON') + (touchMode ? '' : '  (M)')], [MUS_BTN, 'Music: ' + (music && !muted ? 'ON' : 'OFF') + (touchMode ? '' : '  (N)')]].forEach(([b, label]) => {
+    ctx.fillStyle = '#2d2a4a'; ctx.fillRect(b.x, b.y, b.w, b.h);
+    ctx.fillStyle = '#fff'; ctx.font = '13px sans-serif'; ctx.fillText(label, b.x + b.w / 2, b.y + b.h / 2);
+  });
+  ctx.fillStyle = '#8a86a8'; ctx.font = '12px sans-serif';
+  ctx.fillText(touchMode ? 'Tap a level to play' : 'Arrows: select · Enter: play · click a level · Esc: back here', W / 2, 474);
 }
 
 // ---------- loop ----------

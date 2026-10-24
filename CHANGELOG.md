@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1
+- Quieter, softer sound effects; no sound on jumps
+- Ambient music is now off by default and optional (N key or menu toggle)
+- Sound and music toggles added to the level menu
+
 ## 0.3.0
 - Reorganized the code into clear sections (level data separate from the engine)
 - Title screen with level select, saved progress, best times and star ratings

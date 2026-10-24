@@ -34,7 +34,8 @@ This game was designed and coded entirely by AI ([Claude](https://claude.ai) by 
 | Shift dimension | Shift / E / X | ⇄ |
 | Restart level | R | – |
 | Pause | P | – |
-| Mute | M | – |
+| Sound on/off | M | toggle in the level menu |
+| Music on/off | N | toggle in the level menu |
 | Level menu | Esc | ☰ |
 
 ## Features
@@ -42,7 +43,7 @@ This game was designed and coded entirely by AI ([Claude](https://claude.ai) by 
 - 10 handcrafted levels, with a level select and saved progress
 - Star ratings and best times per level
 - Two mechanics so far: dimension-locked blocks and dimension-locked spikes
-- Synthesized music and sound effects that change with the dimension (no audio files)
+- Soft synthesized sound effects, plus optional ambient music (off by default; no audio files)
 - Works on desktop and mobile, with no dependencies and no build step
 
 ## Project structure
