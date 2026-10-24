@@ -38,6 +38,7 @@ Open the play link on your phone and use **Add to Home Screen** to install it as
 | Shift dimension | Shift / E / X | ⇄ |
 | Restart level | R | – |
 | Pause | P | – |
+| Vibration on/off | V | toggle in the level menu |
 | Sound on/off | M | toggle in the level menu |
 | Music on/off | N | toggle in the level menu |
 | Level menu | Esc | ☰ |
@@ -48,7 +49,10 @@ Open the play link on your phone and use **Add to Home Screen** to install it as
 - Star ratings and best times per level
 - Two mechanics so far: dimension-locked blocks and dimension-locked spikes
 - Soft synthesized sound effects, plus optional ambient music (off by default; no audio files)
-- Works on desktop and mobile, with no dependencies and no build step
+- Vibration feedback on supported phones (can be turned off)
+- Installable, works offline, and pauses automatically when you leave the app
+- Works on desktop and mobile; the web version has no dependencies and no build step
+- Ready to be wrapped into Android and iOS apps (see [PUBLISHING.md](PUBLISHING.md))
 
 ## Project structure
 
@@ -67,6 +71,8 @@ PUBLISHING.md          step-by-step store guide
 
 Open `index.html` in a browser, or run `python3 -m http.server` in this folder.
 
+To build the native apps: `npm install`, `npm run build`, then `npx cap add android` or `npx cap add ios` (details in [PUBLISHING.md](PUBLISHING.md)).
+
 ## Make your own level
 
 Levels are plain text in the `LEVELS` list at the top of the script in `index.html`. Each row is 25 characters, and rows are aligned to the bottom of a 25×15 grid.
@@ -79,6 +85,7 @@ Levels are plain text in the `LEVELS` list at the top of the script in `index.ht
 
 ## Roadmap
 
+- [ ] Publish on Google Play and the App Store
 - [ ] In-browser level editor
 - [ ] New mechanics (moving platforms, jump pads)
 - [ ] More levels and a world 2 theme
