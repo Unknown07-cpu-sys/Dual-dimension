@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.0
+- Music is now played from audio files in `audio/`: a Light/Shadow pair that crossfades when you shift, a menu loop and a win jingle
+- Removed the built-in synthesized drone; music is on by default once files exist
+
 ## 1.0.0
 - Store-ready: installable offline web app (PWA) plus Capacitor setup for Android and iOS
 - Landscape fullscreen, notch-safe layout, auto-pause when backgrounded, tap to resume, Android back button support

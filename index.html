@@ -128,11 +128,12 @@ const store = {
   get() { try { return JSON.parse(localStorage.getItem('dd-save')) || {}; } catch (e) { return {}; } },
   set(d) { try { localStorage.setItem('dd-save', JSON.stringify(d)); } catch (e) {} }
 };
-const save = Object.assign({ unlocked: 0, best: {}, muted: false, music: false, haptics: true }, store.get());
+const save = Object.assign({ unlocked: 0, best: {}, muted: false, music: true, haptics: true }, store.get());
+if (!save.musicV2) { save.music = true; save.musicV2 = true; store.set(save); } // one-time: music is back on by default
 let muted = !!save.muted, music = !!save.music;
 
 let actx = null;
-function audio() { try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === 'suspended') actx.resume(); startMusic(); } catch (e) {} }
+function audio() { try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === 'suspended') actx.resume(); loadMusic(); } catch (e) {} }
 function beep(f, d = 0.08, type = 'sine', v = 0.03) {
   if (!actx || muted) return;
   try {
@@ -143,21 +144,45 @@ function beep(f, d = 0.08, type = 'sine', v = 0.03) {
   } catch (e) {}
 }
 
-// ---------- ambient music (synthesized, changes with the dimension) ----------
-let pad = null;
-function startMusic() {
-  if (!actx || pad) return;
-  const gn = actx.createGain(); gn.gain.value = 0; gn.connect(actx.destination);
-  const o1 = actx.createOscillator(), o2 = actx.createOscillator();
-  o1.type = 'sine'; o2.type = 'triangle'; o1.connect(gn); o2.connect(gn); o1.start(); o2.start();
-  pad = { gn, o1, o2 }; updateMusic();
+// ---------- music (your own files in the audio/ folder; see audio/README.md) ----------
+// light + shadow are the same loop in two moods, played together and crossfaded when you shift.
+const tracks = {}, gains = {};
+let musicBus = null, musicLoading = false;
+async function getBuffer(name) {
+  const exts = new Audio().canPlayType('audio/ogg; codecs="vorbis"') ? ['ogg', 'mp3'] : ['mp3', 'ogg'];
+  for (const ext of exts) {
+    try {
+      const r = await fetch('audio/' + name + '.' + ext);
+      if (r.ok) return await actx.decodeAudioData(await r.arrayBuffer());
+    } catch (e) {}
+  }
+  return null; // missing file: that track is simply skipped
+}
+async function loadMusic() {
+  if (!actx || musicLoading) return;
+  musicLoading = true;
+  musicBus = actx.createGain(); musicBus.gain.value = 0.7; musicBus.connect(actx.destination);
+  for (const name of ['menu', 'light', 'shadow', 'win']) { const b = await getBuffer(name); if (b) tracks[name] = b; }
+  const t0 = actx.currentTime + 0.1; // start every loop at the same instant so they stay in sync
+  for (const name of ['menu', 'light', 'shadow']) {
+    if (!tracks[name]) continue;
+    const g = actx.createGain(); g.gain.value = 0; g.connect(musicBus);
+    const src = actx.createBufferSource(); src.buffer = tracks[name]; src.loop = true; src.connect(g); src.start(t0);
+    gains[name] = g;
+  }
+  updateMusic();
 }
 function updateMusic() {
-  if (!pad) return;
-  const n = actx.currentTime;
-  pad.gn.gain.setTargetAtTime(music && !muted ? 0.012 : 0, n, 0.4);
-  pad.o1.frequency.setTargetAtTime(dim ? 160 : 220, n, 0.15);
-  pad.o2.frequency.setTargetAtTime(dim ? 240 : 330, n, 0.15);
+  if (!actx || !musicBus) return;
+  const n = actx.currentTime, on = music && !muted, inMenu = state === 'menu';
+  const want = { menu: on && inMenu, light: on && !inMenu && !dim, shadow: on && !inMenu && !!dim };
+  for (const k in gains) gains[k].gain.setTargetAtTime(want[k] ? 1 : 0, n, 0.25);
+}
+function playOnce(name) {
+  if (!actx || muted || !tracks[name]) return false;
+  const src = actx.createBufferSource(), g = actx.createGain(); g.gain.value = 0.8;
+  src.buffer = tracks[name]; src.connect(g); g.connect(actx.destination); src.start();
+  return true;
 }
 
 // ---------- state ----------
@@ -294,7 +319,7 @@ function win() {
   save.unlocked = Math.max(save.unlocked, Math.min(lvl + 1, LEVELS.length - 1));
   store.set(save);
   burst(goal.c * T + 16, goal.r * T + 16, '#7dffb0', 40, 280);
-  haptic('heavy'); beep(660, 0.15); setTimeout(() => beep(880, 0.25), 140);
+  haptic('heavy'); if (!playOnce('win')) { beep(660, 0.15); setTimeout(() => beep(880, 0.25), 140); }
 }
 
 // ---------- update ----------
@@ -474,7 +499,7 @@ function toggleMusic() { music = !music; save.music = music; store.set(save); up
 const MCOLS = 5;
 const tileRect = i => ({ x: 68 + (i % MCOLS) * 136, y: 250 + Math.floor(i / MCOLS) * 96, w: 120, h: 80 });
 const starsFor = (i, t) => (t == null ? 0 : t <= LEVELS[i].par ? 3 : t <= LEVELS[i].par * 1.6 ? 2 : 1);
-function openMenu() { state = 'menu'; sel = lvl; paused = false; menuT = 0; }
+function openMenu() { state = 'menu'; sel = lvl; paused = false; menuT = 0; updateMusic(); }
 function menuKey(k) {
   const d = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -MCOLS, ArrowDown: MCOLS, a: -1, d: 1, w: -MCOLS, s: MCOLS }[k];
   if (d) { const n = sel + d; if (n >= 0 && n < LEVELS.length) { sel = n; beep(400, 0.04, 'triangle', 0.03); } }
