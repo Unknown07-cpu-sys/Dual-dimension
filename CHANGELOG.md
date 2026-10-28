@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1
+- Music: crossfades are now explicit and exact (only one stem audible at a time), respawning snaps straight to the Light stem, and the Light/Shadow loops are locked to the same length so they can't drift
+- Touch controls: larger labeled JUMP and SHIFT buttons, nearest-button detection, and the buttons hide if a keyboard is used
+- "Rotate your phone" prompt in portrait, automatic pause when rotated, and fullscreen + landscape lock on the first tap where supported
+- Level 2 hint now mentions the SHIFT button
+
 ## 1.1.0
 - Music is now played from audio files in `audio/`: a Light/Shadow pair that crossfades when you shift, a menu loop and a win jingle
 - Removed the built-in synthesized drone; music is on by default once files exist
