@@ -19,10 +19,13 @@ html, body { margin: 0; height: 100%; background: #0b0a16; overflow: hidden; tou
 body { display: flex; align-items: center; justify-content: center; box-sizing: border-box;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
 canvas { width: min(100%, calc((100vh - env(safe-area-inset-top) - env(safe-area-inset-bottom)) * 5 / 3)); aspect-ratio: 5 / 3; display: block; touch-action: none; }
+#rotate { display: none; position: fixed; inset: 0; z-index: 50; background: #0b0a16; color: #fff; font: 20px/1.5 system-ui, sans-serif; align-items: center; justify-content: center; text-align: center; padding: 24px; }
+@media (orientation: portrait) and (pointer: coarse) { #rotate { display: flex; } }
 </style>
 </head>
 <body>
 <canvas id="c" width="800" height="480"></canvas>
+<div id="rotate"><div>↻ Rotate your phone to landscape to play<br><small>(turn on auto-rotate if the screen does not turn)</small></div></div>
 <noscript>Dual Dimensions needs JavaScript enabled.</noscript>
 <script>
 // ===================== LEVELS (edit these to make your own) =====================
@@ -39,7 +42,7 @@ const LEVELS = [
     ".P.....###.....###....G..",
     "#########################",
     "#########################"] },
-  { name: 'The Shift', par: 10, hint: 'Press SHIFT (or E / X) to swap dimensions.', rows: [
+  { name: 'The Shift', par: 10, hint: 'Tap SHIFT (keyboard: Shift / E / X) to swap dimensions.', rows: [
     "...................S.....",
     "...................S.....",
     "...................S.....",
@@ -164,19 +167,26 @@ async function loadMusic() {
   musicBus = actx.createGain(); musicBus.gain.value = 0.7; musicBus.connect(actx.destination);
   for (const name of ['menu', 'light', 'shadow', 'win']) { const b = await getBuffer(name); if (b) tracks[name] = b; }
   const t0 = actx.currentTime + 0.1; // start every loop at the same instant so they stay in sync
+  // if light/shadow differ in length by a few ms, loop both at the shorter length so they never drift apart
+  const sync = tracks.light && tracks.shadow ? Math.min(tracks.light.duration, tracks.shadow.duration) : 0;
   for (const name of ['menu', 'light', 'shadow']) {
     if (!tracks[name]) continue;
     const g = actx.createGain(); g.gain.value = 0; g.connect(musicBus);
-    const src = actx.createBufferSource(); src.buffer = tracks[name]; src.loop = true; src.connect(g); src.start(t0);
+    const src = actx.createBufferSource(); src.buffer = tracks[name]; src.loop = true; if (sync && name !== 'menu') src.loopEnd = sync; src.connect(g); src.start(t0);
     gains[name] = g;
   }
   updateMusic();
 }
-function updateMusic() {
+function fadeTo(g, v, dur) {
+  const p = g.gain, n = actx.currentTime;
+  try { p.cancelScheduledValues(n); p.setValueAtTime(p.value, n); p.linearRampToValueAtTime(v, n + dur); } catch (e) { p.value = v; }
+}
+// Exactly one stem is audible at a time. fast = hard switch (used on level start / respawn).
+function updateMusic(fast) {
   if (!actx || !musicBus) return;
-  const n = actx.currentTime, on = music && !muted, inMenu = state === 'menu';
+  const on = music && !muted, inMenu = state === 'menu';
   const want = { menu: on && inMenu, light: on && !inMenu && !dim, shadow: on && !inMenu && !!dim };
-  for (const k in gains) gains[k].gain.setTargetAtTime(want[k] ? 1 : 0, n, 0.25);
+  for (const k in gains) fadeTo(gains[k], want[k] ? 1 : 0, fast ? 0.08 : 0.35);
 }
 function playOnce(name) {
   if (!actx || muted || !tracks[name]) return false;
@@ -201,7 +211,7 @@ function start(i, keep = false) {
     else if (ch === 'G') { goal = { c, r }; row[c] = '.'; }
     else if (ch === 'P') { hero = { x: c * T + 6, y: (r + 1) * T - 28, w: 20, h: 28, vx: 0, vy: 0, ground: false, coyote: 0, buffer: 0, face: 1 }; row[c] = '.'; }
   }));
-  dim = 0; tdim = 0; collected = 0; state = 'play'; particles = []; msgT = 0; paused = false; updateMusic();
+  dim = 0; tdim = 0; collected = 0; state = 'play'; particles = []; msgT = 0; paused = false; updateMusic(true);
   if (!keep) { deaths = 0; time = 0; }
   save.current = i; store.set(save);
 }
@@ -234,13 +244,14 @@ function touchingSpike(d = dim) {
 // ---------- input ----------
 const keys = { left: false, right: false, jump: false };
 const touch = { left: false, right: false, jump: false };
-let touchMode = matchMedia('(pointer: coarse)').matches;
+let touchMode = matchMedia('(pointer: coarse)').matches || matchMedia('(hover: none)').matches;
 const KEYMAP = { ArrowLeft: 'left', a: 'left', ArrowRight: 'right', d: 'right', ArrowUp: 'jump', w: 'jump', ' ': 'jump' };
 
 addEventListener('keydown', e => {
   audio();
   const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
   if (k.startsWith('Arrow') || k === ' ') e.preventDefault();
+  if (KEYMAP[k] || k === 'Shift' || k === 'Enter') touchMode = false; // a real keyboard is being used
   if (k === 'm') { toggleSound(); return; }
   if (k === 'n') { toggleMusic(); return; }
   if (k === 'v') { toggleHaptics(); return; }
@@ -261,10 +272,10 @@ addEventListener('keyup', e => {
   if (KEYMAP[k]) keys[KEYMAP[k]] = false;
 });
 
-const BTN = { left: { x: 40, y: 452, r: 24 }, right: { x: 100, y: 452, r: 24 }, jump: { x: W - 110, y: 452, r: 24 }, shift: { x: W - 50, y: 452, r: 24 }, menu: { x: W / 2, y: 452, r: 18 } };
+const BTN = { left: { x: 48, y: 444, r: 30 }, right: { x: 122, y: 444, r: 30 }, jump: { x: W - 122, y: 444, r: 30 }, shift: { x: W - 48, y: 444, r: 30 }, menu: { x: W / 2, y: 454, r: 20 } };
 const pmap = new Map();
 const pt = e => { const r = cv.getBoundingClientRect(); return { x: (e.clientX - r.left) * W / r.width, y: (e.clientY - r.top) * H / r.height }; };
-const btnAt = p => { for (const k in BTN) if (Math.hypot(p.x - BTN[k].x, p.y - BTN[k].y) <= BTN[k].r + 14) return k; return null; };
+const btnAt = p => { let best = null, bd = 1e9; for (const k in BTN) { const d = Math.hypot(p.x - BTN[k].x, p.y - BTN[k].y); if (d <= BTN[k].r + 16 && d < bd) { best = k; bd = d; } } return best; };
 const syncTouch = () => { touch.left = touch.right = touch.jump = false; for (const k of pmap.values()) if (k && k !== 'shift' && k !== 'menu') touch[k] = true; };
 cv.addEventListener('pointerdown', e => {
   audio();
@@ -465,12 +476,16 @@ function draw() {
   ctx.globalAlpha = 1;
 
   if (touchMode) {
-    const labels = { left: '◀', right: '▶', jump: '▲', shift: '⇄', menu: '☰' };
+    const sym = { left: '◀', right: '▶', jump: '▲', shift: '◐', menu: '☰' };
+    const word = { jump: 'JUMP', shift: 'SHIFT' };
+    const col = { left: '#000', right: '#000', jump: '#1f7a4d', shift: '#7c5cff', menu: '#000' };
     for (const k in BTN) {
       const b = BTN[k];
-      ctx.globalAlpha = 0.45; ctx.fillStyle = k === 'shift' ? '#7c5cff' : '#000'; ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, 6.283); ctx.fill();
-      ctx.globalAlpha = 0.9; ctx.fillStyle = '#fff'; ctx.font = 'bold 20px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(labels[k], b.x, b.y + 1);
+      ctx.globalAlpha = word[k] ? 0.75 : 0.5; ctx.fillStyle = col[k]; ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, 6.283); ctx.fill();
+      ctx.globalAlpha = 0.9; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.font = 'bold ' + (word[k] ? 22 : 24) + 'px sans-serif'; ctx.fillText(sym[k], b.x, b.y + (word[k] ? -7 : 1));
+      if (word[k]) { ctx.font = 'bold 10px sans-serif'; ctx.fillText(word[k], b.x, b.y + 14); }
     }
     ctx.globalAlpha = 1; ctx.textBaseline = 'top';
   }
@@ -567,6 +582,18 @@ addEventListener('contextmenu', e => e.preventDefault());
   const native = Cap && Cap.isNativePlatform && Cap.isNativePlatform();
   if (!native && 'serviceWorker' in navigator && /^https?:/.test(location.protocol)) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
+
+// phones: go fullscreen + lock landscape on the first tap (where the browser allows it)
+let fsTried = false;
+cv.addEventListener('pointerup', () => {
+  if (fsTried || !touchMode) return; fsTried = true;
+  if (Cap && Cap.isNativePlatform && Cap.isNativePlatform()) return;
+  try {
+    const p = document.documentElement.requestFullscreen && document.documentElement.requestFullscreen();
+    if (p && p.then) p.then(() => screen.orientation && screen.orientation.lock && screen.orientation.lock('landscape')).catch(() => {});
+  } catch (e) {}
+});
+addEventListener('resize', () => { if (touchMode && innerHeight > innerWidth && state === 'play') paused = true; });
 
 start(Math.min(save.unlocked, LEVELS.length - 1));
 openMenu();
